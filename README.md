@@ -14,9 +14,9 @@ https://github.com/user-attachments/assets/3bd10063-0885-45bd-b705-cf1589a6e4a0
 
 
 
-## Install
+## QuickStart
 
-At a Claude Code prompt:
+Run
 
 ```
 claude plugin install tamaclaudchi --marketplace ameroyer/tamaclaudchi
@@ -95,6 +95,9 @@ When one session [messages another](https://code.claude.com/docs/en/cross-sessio
 the sender throws a letter and the receiver catches it. Their messages show as
 conversations, a tab for each pair of sessions (`1`–`9` switch tabs): all of
 them with `m`, a pet's own on its page.
+
+<img width="569" height="420" alt="image" src="https://github.com/user-attachments/assets/4fe743cc-335f-46bf-8e74-7c8426baa679" />
+
 
 ## Settings
 
