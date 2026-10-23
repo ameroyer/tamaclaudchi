@@ -672,20 +672,8 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     expect(await ui.find({ key: 'spend-pet-c' })).toBeUndefined() // spent nothing
     await ui.press({ key: 'spend-back' })
     expect(await ui.find({ type: 'Text', text: /^By day$/ })).toBeUndefined()
-    if (surface === 'terminal') {
-      // the pet plays its frames while the pointer is over it, and rests when it leaves
-      expect(await ui.find({ key: 'pet-b' })).toBeDefined()
-      blits.length = 0
-      await ui.pointer({ type: 'enter', x: 3, y: 2, in: 'hit-b' })
-      await clock.advance(400)
-      const played = blits.filter(x => x.key === 'pet-b').map(x => x.cells)
-      expect(new Set(played).size).toBeGreaterThan(1)
-      await ui.pointer({ type: 'leave', x: 3, y: 2, in: 'hit-b' })
-      await clock.advance(10)
-      const settled = blits.length
-      await clock.advance(400)
-      expect(blits.length).toBe(settled) // the loop stopped
-    }
+    // the pet is drawn, with no pointer layer over it in this release
+    if (surface === 'terminal') expect(await ui.find({ key: 'pet-b' })).toBeDefined()
 
     // the killed session waits behind g
     expect(await ui.find({ type: 'Text', text: /Killed one/ })).toBeUndefined()
@@ -730,8 +718,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     expect((await ui.find({ key: 'name-c' }))?.props.hotkey).toBe('1')
     // a closed pet's temp folder can be cleaned, in two presses; its transcript stays
     expect(await ui.find({ type: 'Text', text: /2\.9 GB in their temp folders/ })).toBeDefined()
-    if (surface === 'terminal') await ui.pointer({ type: 'down', x: 3, y: 2, in: 'hit-c' })
-    else await ui.press({ key: 'name-c' })
+    await ui.press({ key: 'name-c' })
     expect(await ui.find({ key: 'clean' })).toBeDefined()
     ran.length = 0
     await ui.press({ key: 'clean' })
@@ -757,8 +744,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     // a running pet's page offers no clean: its temp folder is in use
     expect(await ui.find({ key: 'clean' })).toBeUndefined()
     // open b: its detail view, its words, and a message to it
-    if (surface === 'terminal') await ui.pointer({ type: 'down', x: 3, y: 2, in: 'hit-b' })
-    else await ui.press({ key: 'name-b' }) // no pointer layer there: a button
+    await ui.press({ key: 'name-b' })
     expect(await ui.find({ type: 'Text', text: /Conversation preview/ })).toBeDefined()
     // git and the conversation start folded, their headers saying what is inside
     expect(await ui.find({ type: 'Text', text: /make the test less flaky/ })).toBeUndefined()
@@ -784,8 +770,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     expect(await ui.find({ key: 'agent-a6' })).toBeDefined()
     expect(await ui.find({ key: 'agent-a7' })).toBeUndefined()
     expect(JSON.stringify(await ui.drawn()).indexOf('"agent-a1"')).toBeLessThan(JSON.stringify(await ui.drawn()).indexOf('"agent-a2"'))
-    if (surface === 'terminal') await ui.pointer({ type: 'down', x: 1, y: 1, in: 'hit-agent:a1' })
-    else await ui.press({ key: 'agent-a1' })
+    await ui.press({ key: 'agent-a1' })
     expect(await ui.find({ type: 'Text', text: /^Trace$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /Bash · pytest -x tests\// })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /sleeps on a real clock/ })).toBeDefined()
@@ -850,8 +835,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     expect(ran.some(a => a[0] === 'tmux' && a[1] === 'send-keys' && a.includes('claude'))).toBe(true)
 
     // killing a pet takes two presses, then its tmux session and its process
-    if (surface === 'terminal') await ui.pointer({ type: 'down', x: 3, y: 2, in: 'hit-b' })
-    else await ui.press({ key: 'name-b' })
+    await ui.press({ key: 'name-b' })
     ran.length = 0
     await ui.press({ key: 'kill' })
     expect(ran.some(a => a.includes('kill-session') || a[0] === 'kill')).toBe(false)
@@ -863,8 +847,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     expect(ran.filter(a => a[0] === 'kill')).toEqual([['kill', '-TERM', '20'], ['kill', '-KILL', '20']])
     // a session holding other panes too keeps them: only b's pane goes
     panesOfB = '%7\n%8\n'
-    if (surface === 'terminal') await ui.pointer({ type: 'down', x: 3, y: 2, in: 'hit-b' })
-    else await ui.press({ key: 'name-b' })
+    await ui.press({ key: 'name-b' })
     ran.length = 0
     await ui.press({ key: 'kill' })
     await ui.press({ key: 'kill' })
@@ -873,8 +856,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     panesOfB = '%7\n'
     // a pane that no longer runs b (its tmux server restarted, its number given out again) is left alone
     paneOwner = '999\n'
-    if (surface === 'terminal') await ui.pointer({ type: 'down', x: 3, y: 2, in: 'hit-b' })
-    else await ui.press({ key: 'name-b' })
+    await ui.press({ key: 'name-b' })
     ran.length = 0
     await ui.press({ key: 'kill' })
     await ui.press({ key: 'kill' })

@@ -67,7 +67,7 @@ working, a red `!` needs you.
 
 ## Using it
 
-Click a pet (or press its number) to open its page: its subagents, git
+Click a pet's name (or press its number) to open its page: its subagents, git
 activity, its messages to and from other sessions, the conversation, and a box
 to message it.
 
@@ -191,7 +191,6 @@ itself.
 | `session.start` | registers `/tama`, opens the pane on a wide terminal (setting `autoOpen`), starts the poll |
 | `command.run` (`/tama`) | opens the pane |
 | `ui.render` (its pane, and the prompt's footer) | draws the shelf, and the little faces right of the prompt |
-| `ui.message` | the pointer over a pet (from its own `hooks/pethit.tsx`): hover plays it, a click opens it |
 | `ui.close` (its pane) | remembers that the pane is closed |
 | `session.receive` | takes only a rename sent by TamaClaudchi itself in another of your sessions (above) and runs `/rename`; every other message passes through untouched |
 

@@ -15,7 +15,7 @@ import type { TamaSession, Mood, Agent, GitInfo, GitTree, Live, Said, Spend, Ste
 
 import { settings, windowDays, since, applyOptions } from './config'
 import { petName, isAsleep, isSad, parseSession, rederive, repoOf, shelfOrder, traceOf, withLive, petName as nameOf } from './sessions'
-import { mailFrames, outfits, petRest, ITEM_COUNT, itemKey, repoKey, SKIN_COUNT, stickySlots, GHOST_FRAME_MS, petFrames, agentOutfit, MODEL_SKIN, modelFamily, modelLabel, petPixels, petSmall, petSvg, type Slots, type Outfit } from './pets'
+import { mailFrames, outfits, petRest, ITEM_COUNT, itemKey, repoKey, SKIN_COUNT, stickySlots, agentOutfit, MODEL_SKIN, modelFamily, modelLabel, petPixels, petSmall, petSvg, type Slots, type Outfit } from './pets'
 import { lastDays, readCalls, spendOf, USAGE_AWK, dayOf, type Call } from './spend'
 import { lettersOf, MAIL_AWK, mailEdges, mailRead, PROMPT_AWK, readMail, postsOf, threadsOf, hasRecentMail, isFrom, type MailFact, type End, type Thread } from './mail'
 import { bytes, clip, vivid, ago, bytesShort, diskColor, GiB, lights, plural, tidy, tokenCount, usd, when, widest } from './format'
@@ -1052,12 +1052,7 @@ export async function readTrace($: EngineInterface, a: Agent) {
 export const CONVO_PAGE = 30
 
 export const WING = 'ʚɞ' // resurrect: a pair of little wings
-const FRAME_MS = 180
 const TMUX_TARGET = '#{session_name}:#{window_id}.#{pane_id}'
-
-// Each Raster's latest hover call: an older one still awaiting stops there,
-// so a leave read before its enter finishes never leaves a loop running.
-const hovers = new Map<string, number>()
 
 /** The session part of a tmux target, `session:@window.%pane`. */
 export const tmuxSession = (target: string) => target.split(':')[0]!
@@ -1087,34 +1082,6 @@ async function paneRuns($: EngineInterface, pane: string, pid: number): Promise<
 }
 
 const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
-
-/** Plays a pet's hover frames into its Raster (`key`, its card's by default) until the pointer leaves. */
-export async function hover($: EngineInterface, id: string, isOn: boolean, key = `pet-${id}`) {
-  playing.get(key)?.cancel()
-  playing.delete(key)
-  const turn = (hovers.get(key) ?? 0) + 1
-  hovers.set(key, turn)
-  const list = await read($, sessions)
-  const s = list.find(x => x.id === id)
-  if (!s || hovers.get(key) !== turn) return
-  const o = outfits(list).get(id)!
-  const now = Date.now()
-  const look = { faded: isAsleep(s, now), halo: !s.live, sad: isSad(s, now, settings.sadMs) }
-  if (!isOn) {
-    await $.ui.blit({ requestId: PANE, key, cells: petRest(o, look).cells })
-    return
-  }
-  const frames = petFrames(o, look)
-  let n = 0
-  const tick = () => {
-    n = (n + 1) % frames.length
-    void $.ui.blit({ requestId: PANE, key, cells: frames[n]! }).then(r => {
-      if (r.deny) { playing.get(key)?.cancel(); playing.delete(key) } // gone from the pane
-    })
-  }
-  tick()
-  playing.set(key, $.clock.every(look.halo ? GHOST_FRAME_MS : FRAME_MS, tick))
-}
 
 /** Opens a pet's page (null: back to the shelf), reading its git, conversation and subagents. */
 export async function select($: EngineInterface, id: string | null) {
@@ -1587,21 +1554,14 @@ export async function renderPane($: EngineInterface, e: PaneEvent) {
 function kit($: EngineInterface, e: PaneEvent, v: View) {
   const { Box, Text } = $.ui.resolve(e)
   // On the terminal a pet is a true-colour Raster (Text colours are cut to the
-  // terminal's palette, which washes pastels out to white), with an invisible
-  // Client over it that reports hover and clicks.
-  // `hitId` names the pointer layer: a pet's id, or `agent:<id>` for a subagent's
-  const art = (o: Outfit, key: string, hitId: string, look: { faded: boolean; halo?: boolean; sad?: boolean }, alt: string, isSmall = false) => {
+  // terminal's palette, which washes pastels out to white). This release has
+  // no pointer layer over it (the directory blocks any Client): a pet opens
+  // from its name's button or its number.
+  const art = (o: Outfit, key: string, look: { faded: boolean; halo?: boolean; sad?: boolean }, alt: string, isSmall = false) => {
     if (e.surface === 'terminal') {
-      const { Raster, Client } = $.ui.resolve(e)
+      const { Raster } = $.ui.resolve(e)
       const rest = isSmall ? petSmall(o, look) : petRest(o, look)
-      return (
-        <Box key={`${key}-box`} position="relative" width={rest.columns} height={rest.rows}>
-          <Raster key={key} columns={rest.columns} rows={rest.rows} cells={rest.cells} />
-          <Box position="absolute" top={0} left={0}>
-            <Client key={`hit-${hitId}`} module="./pethit.tsx" props={{ id: hitId, columns: rest.columns, rows: rest.rows }} width={rest.columns} height={rest.rows} />
-          </Box>
-        </Box>
-      )
+      return <Raster key={key} columns={rest.columns} rows={rest.rows} cells={rest.cells} />
     }
     if (e.surface === 'desktop' || e.surface === 'vscode') {
       const { Svg } = $.ui.resolve(e)
@@ -1609,11 +1569,10 @@ function kit($: EngineInterface, e: PaneEvent, v: View) {
     }
     return <Text>{alt}</Text>
   }
-  // a card's pet opens its page; the big one on that page only plays (`page:<id>`)
-  const pet = (s: TamaSession, key: string, isPage = false) =>
-    art(v.looks.get(s.id)!, key, isPage ? `page:${s.id}` : s.id, { faded: isAsleep(s, v.now), halo: !s.live, sad: isSad(s, v.now, settings.sadMs) }, `${modelLabel(s.model)} pet`)
+  const pet = (s: TamaSession, key: string) =>
+    art(v.looks.get(s.id)!, key, { faded: isAsleep(s, v.now), halo: !s.live, sad: isSad(s, v.now, settings.sadMs) }, `${modelLabel(s.model)} pet`)
   const agentPet = (s: TamaSession, a: Agent, key: string) =>
-    art(agentOutfit(v.looks.get(s.id)!, a), key, `agent:${a.id}`, { faded: a.isDone }, `${a.type} agent`, true)
+    art(agentOutfit(v.looks.get(s.id)!, a), key, { faded: a.isDone }, `${a.type} agent`, true)
   const modelPill = (s: TamaSession) => <Text bold color={MODEL_SKIN[modelFamily(s.model)]!.body}>{modelLabel(s.model)}</Text>
   const ctx = (s: TamaSession) => {
     const l = lights(s.contextTokens)
@@ -2066,7 +2025,7 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
         ) : null}
       </Box>
       <Box flexDirection="column" alignItems="center" borderStyle="round" borderColor={MOOD[s.mood].border ?? o.skin.outline} paddingX={1}>
-        {k.pet(s, 'detail-pet', true)}
+        {k.pet(s, 'detail-pet')}
         {isRenaming && Input ? (
           <Box width={Math.min(maxW, 50)} flexDirection="column">
             <Input key="rename-name" label="name" value={petName(s)} autoFocus submitLabel="rename" onSubmit={name => void renamePet($, s, name)} />
@@ -2335,30 +2294,6 @@ export const register: Register = (on, options) => {
     // the main screen (tmux's default) seats the pane above the prompt, not docked on the right
     if (!e.presentation.isFullscreen) $.ui.toast('Shown above the prompt: run /tui fullscreen (or set "tui": "fullscreen" in settings) to dock it on the right.', { timeoutMs: 8000 })
     return { text: 'TamaClaudchi shelf opened.' }
-  })
-
-  // the pointer layer over each pet (pethit.tsx): hover plays it, a click opens it
-  on('ui.message', async ($, e) => {
-    if (!e.module.endsWith('pethit.tsx')) return {}
-    const d = e.data as { id?: string; hover?: boolean; open?: boolean }
-    if (!d.id) return {}
-    // a subagent's little pet: a click opens its trace
-    // the big pet on its own page: it plays, and a click there opens nothing new
-    if (d.id.startsWith('page:')) {
-      if (d.hover !== undefined) await hover($, d.id.slice('page:'.length), d.hover, 'detail-pet')
-      return {}
-    }
-    if (d.id.startsWith('agent:')) {
-      if (d.open) await openAgent($, d.id.slice('agent:'.length))
-      return {}
-    }
-    if (d.open) {
-      await hover($, d.id, false)
-      await select($, d.id)
-    } else if (d.hover !== undefined) {
-      await hover($, d.id, d.hover)
-    }
-    return {}
   })
 
   // another session's shelf asks this one's pet to rename itself (the actions section)

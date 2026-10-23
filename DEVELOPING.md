@@ -74,6 +74,14 @@ clone.
 `find`, `stat`, `grep`, `awk`, `sed`, `tail`, `head`, `tr`, `du`, `xargs`,
 `id`, `date -r`, `ps`, `kill`.
 
+## The directory release
+
+The `directory_release` branch is what is submitted to Anthropic's plugin
+directory. The directory blocks any mod that draws a `Client` element
+(anthropics/claude-code#103757), so this branch has no pointer layer over the
+pets: no hover animation, and a pet opens from its name's button or its number
+rather than from its picture. `main` keeps both.
+
 ## Files
 
 The plugin directory accepts `$` (the engine interface) only when it is passed
@@ -86,8 +94,7 @@ in `hooks/register.tsx`, in sections; the other modules are plain helpers.
 | `hooks/config.ts` | the settings, from `/config` |
 | `hooks/spend.ts` | each API call's usage, counted once, and a pet's spend |
 | `hooks/sessions.ts` | parses a transcript into a pet's mood, model and words |
-| `hooks/pets.ts`, `hooks/sprites.ts` | the pixel pets and their hover animations |
-| `hooks/pethit.tsx` | the invisible layer over each pet that catches the pointer |
+| `hooks/pets.ts`, `hooks/sprites.ts` | the pixel pets and their animations |
 | `hooks/pricing.ts` | API list prices, for each reply's cost |
 | `hooks/mail.ts` | messages between sessions: read from both ends, joined by id |
 | `hooks/format.ts` | text helpers: sizes, ages, prices, colours |
