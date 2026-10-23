@@ -3,7 +3,7 @@
 // goes or clicks. The pet itself is repainted from there with $.ui.blit.
 import type { ClientModule } from 'claude-code'
 
-type Props = { id: string; w: number; h: number }
+type Props = { id: string; columns: number; rows: number }
 
 const PetHit: ClientModule<Props, true> = (props, surface) => {
   const { Box } = surface.elements
@@ -16,7 +16,7 @@ const PetHit: ClientModule<Props, true> = (props, surface) => {
     })
   }
   // exactly the pet's box, whatever region the surface measured
-  return <Box width={props.w} height={props.h} />
+  return <Box width={props.columns} height={props.rows} />
 }
 
 export default PetHit
