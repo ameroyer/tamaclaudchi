@@ -1,0 +1,68 @@
+{
+  "name": "tamaclaudchi",
+  "version": "0.1.0",
+  "description": "TamaClaudchi in Claude Code: a pane of pixel pets, one per session across every folder, hatted by model",
+  "author": {
+    "name": "Amelie Royer"
+  },
+  "homepage": "https://github.com/ameroyer/tamaclaudchi",
+  "repository": "https://github.com/ameroyer/tamaclaudchi",
+  "icon": "./.claude-plugin/icon.png",
+  "types": "./types/index.d.ts",
+  "license": "MIT",
+  "userConfig": {
+    "autoOpen": {
+      "type": "boolean",
+      "title": "Open the shelf at start",
+      "description": "Open the TamaClaudchi pane by itself when a session starts on a wide terminal. Off: only /tama opens it.",
+      "default": true
+    },
+    "alerts": {
+      "type": "string",
+      "title": "Alert when a pet needs you",
+      "description": "How a pet that starts to need you (a permission prompt) is announced: a toast in each of your other sessions plus one desktop notification, a toast only, or nothing.",
+      "default": "toast and notification",
+      "options": [
+        "toast and notification",
+        "toast",
+        "off"
+      ]
+    },
+    "alertOnDone": {
+      "type": "boolean",
+      "title": "Also alert when a pet finishes",
+      "description": "Announce a pet that has finished its turn and waits for you, as well as one that needs approval.",
+      "default": false
+    },
+    "pollSeconds": {
+      "type": "number",
+      "title": "Poll every (seconds)",
+      "description": "How often the shelf is read, 2 to 60: at every poll while its pane is open or alerts are on, every fourth otherwise.",
+      "default": 4
+    },
+    "graveyardDays": {
+      "type": "number",
+      "title": "Graveyard and spend window (days)",
+      "description": "How far back closed pets are kept on the graveyard and counted on the spend page, 1 to 30.",
+      "default": 5
+    },
+    "sadAfterMinutes": {
+      "type": "number",
+      "title": "Sad after (minutes)",
+      "description": "A running pet that has waited on you this long looks sad. 0: never.",
+      "default": 900
+    },
+    "diskWarnGb": {
+      "type": "number",
+      "title": "Disk warning (GB)",
+      "description": "Claude's disk use on this machine turns orange past this.",
+      "default": 5
+    },
+    "diskAlarmGb": {
+      "type": "number",
+      "title": "Disk alarm (GB)",
+      "description": "Claude's disk use on this machine turns red past this.",
+      "default": 10
+    }
+  }
+}
