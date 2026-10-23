@@ -135,7 +135,7 @@ function kit($: EngineInterface, e: PaneEvent, v: View) {
         <Box key={`${key}-box`} position="relative" width={rest.columns} height={rest.rows}>
           <Raster key={key} columns={rest.columns} rows={rest.rows} cells={rest.cells} />
           <Box position="absolute" top={0} left={0}>
-            <Client key={`hit-${hitId}`} module="./pethit.tsx" props={{ id: hitId, w: rest.columns, h: rest.rows }} width={rest.columns} height={rest.rows} />
+            <Client key={`hit-${hitId}`} module="./pethit.tsx" props={{ id: hitId, columns: rest.columns, rows: rest.rows }} width={rest.columns} height={rest.rows} />
           </Box>
         </Box>
       )
@@ -179,7 +179,7 @@ export function searchGraves(closed: TamaSession[], query: string): { found: Tam
   try { if (!SLOW_REGEXP.test(query)) re = new RegExp(query, 'i') } catch {}
   const q = query.toLowerCase()
   const found = closed.filter(s =>
-    [s.title ?? '', s.repo, s.branch ?? '', s.cwd].some(h => (re ? re.test(h) : h.toLowerCase().includes(q))))
+    [s.title ?? '', s.repo, s.branch ?? '', s.cwd].some(field => (re ? re.test(field) : field.toLowerCase().includes(q))))
   return { found, isRegexp: re !== null }
 }
 
