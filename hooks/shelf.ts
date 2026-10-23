@@ -213,18 +213,19 @@ const sameStart = (a: string, b: string) => a.replace(/\s+/g, ' ') === b.replace
 
 /** Every process by pid, from one ps run: one process a poll, rather than one per pid. */
 function processes($: EngineInterface): Promise<Map<number, Proc> | null> {
-  procs ??= $.process.run(['env', 'TZ=UTC0', 'LC_ALL=C', 'ps', '-A', '-o', 'pid=,ppid=,lstart='])
-    .then(r => {
-      if (r.exitCode !== 0) return null
-      const out = new Map<number, Proc>()
-      for (const l of r.stdout.split('\n')) {
-        const m = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(l)
-        if (m) out.set(Number(m[1]), { ppid: Number(m[2]), start: m[3]! })
-      }
-      return out
-    })
-    .catch(() => null)
+  if (!procs) procs = readProcesses($)
   return procs
+}
+
+async function readProcesses($: EngineInterface): Promise<Map<number, Proc> | null> {
+  const r = await $.process.run(['env', 'TZ=UTC0', 'LC_ALL=C', 'ps', '-A', '-o', 'pid=,ppid=,lstart=']).catch(() => null)
+  if (!r || r.exitCode !== 0) return null
+  const out = new Map<number, Proc>()
+  for (const l of r.stdout.split('\n')) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(l)
+    if (m) out.set(Number(m[1]), { ppid: Number(m[2]), start: m[3]! })
+  }
+  return out
 }
 
 /** Whether a pid still runs and is still the process the registry saw start. */
@@ -290,10 +291,13 @@ export function machineFrom(stdout: string): { key: string; domain: string | nul
 
 /** This machine, read once. */
 function machineOf($: EngineInterface) {
-  machine ??= $.process.run(['sh', '-c', MACHINE_SCRIPT])
-    .then(r => machineFrom(r.stdout))
-    .catch(() => ({ key: 'local', domain: null }))
+  if (!machine) machine = readMachine($)
   return machine
+}
+
+async function readMachine($: EngineInterface): Promise<{ key: string; domain: string | null }> {
+  const r = await $.process.run(['sh', '-c', MACHINE_SCRIPT]).catch(() => null)
+  return r ? machineFrom(r.stdout) : { key: 'local', domain: null }
 }
 
 // Registry entries by file name, as last read: one whose file has not changed
