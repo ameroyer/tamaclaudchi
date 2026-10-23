@@ -1,8 +1,12 @@
 # TamaClaudchi
 
-A pixel pet for every Claude Code session on your machine, in a `/tama` pane:
-see at a glance which sessions are working, which need you, and which have
+ <img align="right" src=".claude-plugin/icon.png" width="200" >
+ 
+TamaClaudchi is a cute management for Claude Code sessions on your machine, in a `/tama` pane:
+See at a glance which sessions are working, which need you, and which have
 gone quiet.
+
+You can also use this plugin to quickly switch between sessions via tmux, send messages across sessions and review their conversations, monitor their subagents etc. It also displays useful info at a glance such that the size of the current context, model used etc.
 
 <!-- a screenshot or GIF of the shelf here -->
 
