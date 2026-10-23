@@ -19,11 +19,11 @@ claude plugin test .
 ```
 
 Loading the mod writes its types under `.claude-plugin/types/` and a
-`tsconfig.json` that extends them (both ignored by git). After that, type-check
-with:
+`tsconfig.json` that extends them (both ignored by git). After that, with
+TypeScript installed, type-check with:
 
 ```
-npx -p typescript tsc -p .
+tsc -p .
 ```
 
 ## How it works

@@ -123,7 +123,83 @@ In `/config`, under the plugin:
 ## Privacy
 
 TamaClaudchi only reads what Claude Code already writes under `~/.claude`.
-Nothing leaves your machine. Git runs read-only.
+Nothing leaves your machine: the mod makes no network requests. Git runs
+read-only.
+
+## What it does on your machine
+
+**What it reads.** The transcripts under `~/.claude/projects` and the registry
+of running sessions under `~/.claude/sessions` (or under `$CLAUDE_CONFIG_DIR`),
+and the environment variables `HOME`, `CLAUDE_CONFIG_DIR`, `TMUX` and
+`TMUX_PANE`. It never reads credentials or API keys (`~/.claude/.credentials.json`,
+the keychain): it does not need them, and nothing it reads is sent anywhere.
+To tell machines apart on a shared home folder it reads the machine's id
+(`/etc/machine-id` and its pid namespace on Linux, the hardware UUID from
+`ioreg` on macOS); only its first 12 characters are used, as part of a file
+name under `~/.claude/tamaclaudchi/`.
+
+**What it writes.**
+
+- `~/.claude/tamaclaudchi/lease-<machine>.json` and `shelf-<machine>.json`: the
+  lease that lets one session read for the whole machine, and what it found
+  (names, folders, moods, spend; never what the sessions said). The folder is
+  made readable by your user only (`chmod 700`).
+- Renaming a *closed* pet (`e`) appends one `custom-title` line to the end of
+  its transcript, exactly as `/rename` does. Only a `<session id>.jsonl` file
+  under `~/.claude/projects/` is ever written.
+- Cleaning (`x`) deletes a closed pet's folder in Claude Code's temp dir
+  (`rm -rf <temp dir>/<project>/<session id>`), never its transcript, and never
+  for a running session or one written in the last half hour.
+
+It writes no settings, start-up, build or instructions file.
+
+**What it sends, and where.** Nothing leaves your machine. Within it:
+
+- A message you type in a pet's box goes to that session, with Claude Code's
+  own cross-session messaging (`$.session.send`).
+- Renaming a *running* pet sends that session a message starting with
+  `[tamaclaudchi rename]`; TamaClaudchi's own copy in that session takes it
+  and runs `/rename` there (see the hooks below). Those are the only messages
+  it sends, and only when you ask.
+- A desktop notification when a pet needs you (setting `alerts`), and text
+  copied to your clipboard when you press `c` or a copy button.
+
+**Programs it runs, and why.** All with fixed arguments, through Claude Code's
+process call, never through a shell with your input in the command:
+
+| program | when | why |
+|---|---|---|
+| `sh -c <script>` with `find`, `stat`, `grep`, `awk`, `sed`, `tail`, `head`, `tr`, `du`, `xargs`, `id`, `date` | every poll | read the transcripts that changed and the disk use; each script is a fixed string in `hooks/shelf.ts`, the paths passed as arguments |
+| `env TZ=UTC0 LC_ALL=C ps`, `kill -0` | every poll | whether a session's process is still alive (macOS; Linux reads `/proc`) |
+| `git` (read-only: `rev-parse`, `status`, `log`) | a pet's page | its git activity, with fsmonitor and signature programs turned off |
+| `tail` | a pet's page | its latest conversation |
+| `cat /etc/machine-id`, `readlink`, `ioreg` | once | which machine this is (above) |
+| `chmod 700` | once | keep `~/.claude/tamaclaudchi/` to your user |
+| `tmux` (`display-message`, `switch-client`, `select-window`, `select-pane`, `new-session`, `has-session`, `list-sessions`, `send-keys`, `list-panes`, `kill-pane`, `kill-session`) | `j`, `n`, `r`, `k` | jump to a pet, hatch one (`claude` in a new tmux session), resurrect one (`claude --resume <id>`), kill one |
+| `kill -TERM`, then `kill -KILL` | `k` ×2 | kill a pet not in tmux, only once its process is sure to be that session |
+| `rm -rf` | `x` ×2 | clean a closed pet's temp folder (above) |
+| `sh -c 'printf … >> <transcript>'` | `e` on a closed pet | the rename line (above) |
+
+**Claude Code commands it runs.** `/rename <name>`, when you rename this
+session's pet, or when another session's TamaClaudchi asks this one to rename
+itself.
+
+**Its hooks.** It hooks no tool calls, network or process events.
+
+| hook | what it does |
+|---|---|
+| `session.start` | registers `/tama`, opens the pane on a wide terminal (setting `autoOpen`), starts the poll |
+| `command.run` (`/tama`) | opens the pane |
+| `ui.render` (its pane, and the prompt's footer) | draws the shelf, and the little faces right of the prompt |
+| `ui.message` | the pointer over a pet (from its own `hooks/pethit.tsx`): hover plays it, a click opens it |
+| `ui.close` (its pane) | remembers that the pane is closed |
+| `session.receive` | takes only a rename sent by TamaClaudchi itself in another of your sessions (above) and runs `/rename`; every other message passes through untouched |
+
+**Other plugins.** It calls none. The only plugin it answers is itself:
+TamaClaudchi in your other sessions.
+
+**What it adds.** One slash command, `/tama`, a pane and a footer entry. No
+tools, agents or MCP servers.
 
 ## Update or remove
 

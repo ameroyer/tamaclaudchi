@@ -467,6 +467,20 @@ export async function refresh($: EngineInterface, opts: { everyMs?: number } = {
   }
   isReading = true
   try {
+    // a loop, not a call to itself: the directory's scan follows no cycles
+    for (let next: { everyMs?: number } | null = opts; next; ) {
+      await readOnce($, next)
+      next = askedAgain
+      askedAgain = null
+    }
+  } finally {
+    isReading = false
+  }
+}
+
+/** One pass of refresh. */
+async function readOnce($: EngineInterface, opts: { everyMs?: number }) {
+  try {
     const now = await $.clock.now()
     const dir = await claudeDir($)
     const mine = await read($, me)
@@ -510,13 +524,6 @@ export async function refresh($: EngineInterface, opts: { everyMs?: number } = {
     else if (await read($, showMailroom)) await readMailText($, shelf)
   } catch (err) {
     $.ui.log(`tamaclaudchi: could not read the shelf: ${String(err)}`)
-  } finally {
-    isReading = false
-    if (askedAgain) {
-      const again = askedAgain
-      askedAgain = null
-      void refresh($, again)
-    }
   }
 }
 
