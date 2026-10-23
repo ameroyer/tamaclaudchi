@@ -19,11 +19,18 @@ https://github.com/user-attachments/assets/3bd10063-0885-45bd-b705-cf1589a6e4a0
 At a Claude Code prompt:
 
 ```
-/plugin install tamaclaudchi --marketplace ameroyer/tamaclaudchi
+claude plugin install tamaclaudchi --marketplace ameroyer/tamaclaudchi
 ```
 
-Then start a new session and type `/tama`. That's it: every setting has a
-default.
+Then start a new session and type `/tama` if the shelf doesn't pop up automatically
+
+```bash
+tmux new -s work
+claude
+# fullscreen mode allows the TamaClaudchi pane to sets properly on small terminals; Only needed the first time
+/tui fullscreen
+/tama
+```
 
 Two tips:
 
@@ -31,6 +38,9 @@ Two tips:
   can take you to its session, and you can hatch, resurrect and kill pets.
 - **Use the fullscreen layout** (`/tui fullscreen`) to dock the pane on the
   right. Otherwise it opens above the prompt.
+
+To configure: Type `/config` in Claude and you will be able to access a few configuration option for TamaClaudchi
+<img width="558" height="119" alt="image" src="https://github.com/user-attachments/assets/9cca0373-59ca-4b64-b7f1-e0cd3f6663f1" />
 
 ## Reading a pet
 
