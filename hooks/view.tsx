@@ -133,7 +133,7 @@ function kit($: EngineInterface, e: PaneEvent, v: View) {
       const rest = isSmall ? petSmall(o, look) : petRest(o, look)
       return (
         <Box key={`${key}-box`} position="relative" width={rest.columns} height={rest.rows}>
-          <Raster key={key} {...rest} />
+          <Raster key={key} columns={rest.columns} rows={rest.rows} cells={rest.cells} />
           <Box position="absolute" top={0} left={0}>
             <Client key={`hit-${hitId}`} module="./pethit.tsx" props={{ id: hitId, w: rest.columns, h: rest.rows }} width={rest.columns} height={rest.rows} />
           </Box>
@@ -339,7 +339,7 @@ function card($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?:
         </Box>
         {k.pet(s, `pet-${s.id}`)}
         {/* its name opens it: by Tab and Enter, its digit, or a click (the pet takes one too, on the terminal) */}
-        <Button key={`name-${s.id}`} plain {...(digit ? { hotkey: String(digit) } : {})} onPress={() => void select($, s.id)}>
+        <Button key={`name-${s.id}`} plain hotkey={digit ? String(digit) : undefined} onPress={() => void select($, s.id)}>
           <Text bold wrap="truncate" dimColor={!s.live} color={isMe ? ME : undefined}>{petName(s)}</Text>
         </Button>
         <Text color={o.skin.body} wrap="truncate">{s.repo}</Text>
@@ -455,7 +455,7 @@ function mailTabs($: EngineInterface, e: PaneEvent, v: View, threads: Thread[], 
           const isOpen = t.key === open.key
           const look = isOpen ? TAB_OPEN : TAB_SHUT
           return (
-            <Button key={`mail-tab-${t.key}`} plain {...(i < DIGITS ? { hotkey: String(i + 1) } : {})} onPress={() => void openTab($, t.key)}>
+            <Button key={`mail-tab-${t.key}`} plain hotkey={i < DIGITS ? String(i + 1) : undefined} onPress={() => void openTab($, t.key)}>
               <Text bold={isOpen} color={look.fg} backgroundColor={look.bg}>
                 {' '}{i < DIGITS ? `${i + 1} ` : ''}{clip(label(t), TAB_W)} ({t.posts.length}){' '}
               </Text>
