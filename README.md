@@ -8,6 +8,13 @@ gone quiet.
 
 You can also use this plugin to quickly switch between sessions via tmux, send messages across sessions and review their conversations, monitor their subagents etc. It also displays useful info at a glance such that the size of the current context, model used etc.
 
+> [!NOTE]
+> **This is the `directory_release` branch**, the version submitted to Anthropic's plugin directory. It turns off two minor features that [`main`](https://github.com/ameroyer/tamaclaudchi/tree/main) has:
+>
+> - **Clicking a pet's picture** to open its page. Click its name or press its number instead (subagents keep their own buttons).
+> - **The hover animation** when the pointer is over a pet.
+>
+> Both rely on a `Client` element, an invisible layer over each pet that catches the pointer. The directory's validation currently blocks every mod that uses one, even when it's written exactly as the docs show ([anthropics/claude-code#103757](https://github.com/anthropics/claude-code/issues/103757)). Everything else is the same as `main`. For the full version, install from `main` instead (see [Developing](#developing)).
 
 
 https://github.com/user-attachments/assets/3bd10063-0885-45bd-b705-cf1589a6e4a0
