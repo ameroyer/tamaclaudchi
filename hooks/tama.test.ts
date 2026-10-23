@@ -554,7 +554,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
   on('fs.exists', async (_$, e) => ({ value: ALIVE.has(e.path) }))
   on('fs.stat', async (_$, e) => (e.path === '/h/src/bramble' ? { value: { kind: 'dir' as const, size: 0, mtimeMs: now, isLink: false } } : { deny: 'ENOENT' }))
   const reads: string[] = []
-  on('fs.read', async (_$, e) => (reads.push(e.path), { value: e.path.endsWith('/.claude-plugin/plugin.json') ? '{"version":"9.9.9"}' : STATS[e.path] ?? JSON.stringify(REGISTRY[e.path]) }))
+  on('fs.read', async (_$, e) => (reads.push(e.path), { value: STATS[e.path] ?? JSON.stringify(REGISTRY[e.path]) }))
   // the shelf this session read, written for the other sessions on the machine
   const written = new Map<string, string>()
   on('fs.write', async (_$, e) => {
@@ -657,7 +657,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     expect((await ui.find({ type: 'Text', text: /^12\.8 GB$/ }))?.props.color).toBe('#ff5555')
     expect(await ui.find({ type: 'Text', text: /^5\.7G$/ })).toBeDefined()
     // which copy of the mod this is, as its plugin.json says
-    expect(JSON.stringify(await ui.drawn())).toContain('v9.9.9')
+    expect(JSON.stringify(await ui.drawn())).toContain('v0.1.0')
     // the shelf was read here, and left for the other sessions on this machine,
     // without what the sessions said
     expect(JSON.parse(written.get('/h/.claude/tamaclaudchi/lease-f3c19270a4e1.json') ?? '{}').by).toBe('me')

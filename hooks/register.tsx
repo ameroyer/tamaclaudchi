@@ -42,6 +42,8 @@ const mailSeen = atom({ plugin: 'tamaclaudchi', key: 'mailSeen' } as const, {} a
 const mailText = atom({ plugin: 'tamaclaudchi', key: 'mailText' } as const, null as { key: string; byId: Record<string, string> } | null)
 
 const TITLE = 'TamaClaudchi'
+/** The header says which copy of the mod a pane runs: keep in step with .claude-plugin/plugin.json. */
+const VERSION = '0.1.0'
 /** With the pane closed and no alerts to raise, only the footer shows the pets: read them this many polls apart. */
 const CLOSED_POLLS = 4
 /** With every face dozing, the footer moves one frame in this many. */
@@ -86,10 +88,7 @@ export const register: Register = (on, options) => {
     await update($, disk, () => null)
     await update($, sessions, () => [])
     void $.session.id().then(id => update($, me, () => id))
-    // the header says which copy of the mod a pane runs
-    void $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`)
-      .then(text => update($, version, () => String((JSON.parse(text) as { version?: unknown }).version ?? '')))
-      .catch(() => undefined)
+    await update($, version, () => VERSION)
     // Unasked, a pane seats from 144 columns and waits below that, so on a
     // wide terminal your pet greets you at start, as the logo would.
     if (settings.autoOpen) void open($, false)
