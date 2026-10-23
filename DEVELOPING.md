@@ -76,24 +76,20 @@ clone.
 
 ## Files
 
+The plugin directory accepts `$` (the engine interface) only when it is passed
+to a function declared in the same file, so every function that takes it lives
+in `hooks/register.tsx`, in sections; the other modules are plain helpers.
+
 | file | role |
 |---|---|
-| `hooks/register.tsx` | wires the hooks: `/tama`, the pane, the poll |
+| `hooks/register.tsx` | everything that touches Claude Code, in sections: `players` (a pet's animations), `shared` (the lease: one session reads, the others follow), `alerts` (the toasts and the notification), `mailfx` (a message's letter animation), `shelf` (reads transcripts, the live registry, git and conversations), `actions` (the buttons: tmux, messages, kill and resurrect), `footer` (the little faces right of the prompt), `view` (the shelf, the graveyard and a pet's page), and `register` (the hooks: `/tama`, the pane, the poll) |
 | `hooks/config.ts` | the settings, from `/config` |
-| `hooks/shelf.ts` | reads transcripts, the live registry, git and conversations |
-| `hooks/shared.ts` | the lease: one session reads, the others follow |
 | `hooks/spend.ts` | each API call's usage, counted once, and a pet's spend |
-| `hooks/alerts.ts` | the toasts and the notification when a pet needs you |
 | `hooks/sessions.ts` | parses a transcript into a pet's mood, model and words |
-| `hooks/view.tsx` | draws the shelf, the graveyard and a pet's page |
-| `hooks/actions.ts` | the buttons: tmux, messages, kill and resurrect |
 | `hooks/pets.ts`, `hooks/sprites.ts` | the pixel pets and their hover animations |
 | `hooks/pethit.tsx` | the invisible layer over each pet that catches the pointer |
-| `hooks/footer.tsx` | the little faces at the right of the prompt's footer |
 | `hooks/pricing.ts` | API list prices, for each reply's cost |
 | `hooks/mail.ts` | messages between sessions: read from both ends, joined by id |
-| `hooks/mailfx.ts` | a new message's animation: a letter thrown, a letter caught |
-| `hooks/players.ts` | plays a pet's frames, one animation at a time per pet |
 | `hooks/format.ts` | text helpers: sizes, ages, prices, colours |
 | `hooks/hooks.json` | names the hooks module for Claude Code |
 | `hooks/tama.test.ts` | the tests, run by `claude plugin test .` |
