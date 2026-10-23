@@ -29,18 +29,24 @@ tmux new -s work
 claude
 # fullscreen mode allows the TamaClaudchi pane to sets properly on small terminals; Only needed the first time
 /tui fullscreen
+# to open the shelf
 /tama
+# to close it, click on the cross in top right
 ```
 
-Two tips:
+#### Tips
 
 - **Run Claude Code inside tmux** (`tmux new -s work`, then `claude`), so a pet
   can take you to its session, and you can hatch, resurrect and kill pets.
 - **Use the fullscreen layout** (`/tui fullscreen`) to dock the pane on the
   right. Otherwise it opens above the prompt.
 
+#### Configure
 To configure: Type `/config` in Claude and you will be able to access a few configuration option for TamaClaudchi
 <img width="558" height="119" alt="image" src="https://github.com/user-attachments/assets/9cca0373-59ca-4b64-b7f1-e0cd3f6663f1" />
+
+#### Uninstall
+Run `claude plugin uninstall tamaclaudchi@tamaclaudchi `
 
 ## Reading a pet
 
