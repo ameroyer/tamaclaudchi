@@ -169,7 +169,7 @@ process call, never through a shell with your input in the command:
 
 | program | when | why |
 |---|---|---|
-| `sh -c <script>` with `find`, `stat`, `grep`, `awk`, `sed`, `tail`, `head`, `tr`, `du`, `xargs`, `id`, `date` | every poll | read the transcripts that changed and the disk use; each script is a fixed string in `hooks/shelf.ts`, the paths passed as arguments |
+| `sh -c <script>` with `find`, `stat`, `grep`, `awk`, `sed`, `tail`, `head`, `tr`, `du`, `xargs`, `id`, `date` | every poll | read the transcripts that changed and the disk use; each script is a fixed string in `hooks/register.tsx` (its shelf section), the paths passed as arguments |
 | `env TZ=UTC0 LC_ALL=C ps`, `kill -0` | every poll | whether a session's process is still alive (macOS; Linux reads `/proc`) |
 | `git` (read-only: `rev-parse`, `status`, `log`) | a pet's page | its git activity, with fsmonitor and signature programs turned off |
 | `tail` | a pet's page | its latest conversation |
