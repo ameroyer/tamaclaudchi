@@ -8,7 +8,11 @@ gone quiet.
 
 You can also use this plugin to quickly switch between sessions via tmux, send messages across sessions and review their conversations, monitor their subagents etc. It also displays useful info at a glance such that the size of the current context, model used etc.
 
-<!-- a screenshot or GIF of the shelf here -->
+
+
+https://github.com/user-attachments/assets/3bd10063-0885-45bd-b705-cf1589a6e4a0
+
+
 
 ## Install
 
