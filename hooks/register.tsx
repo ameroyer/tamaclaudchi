@@ -48,7 +48,7 @@ const PANE = 'tamaclaudchi'
 
 // --- register
 
-async function open($: EngineInterface, focus: boolean) {
+async function openShelf($: EngineInterface, focus: boolean) {
   await update($, isOpen, () => true)
   await refresh($)
   return $.ui.open(focus ? { id: PANE, title: TITLE, focus: true } : { id: PANE, title: TITLE })
@@ -87,7 +87,7 @@ export const register: Register = (on, options) => {
     await update($, version, () => VERSION)
     // Unasked, a pane seats from 144 columns and waits below that, so on a
     // wide terminal your pet greets you at start, as the logo would.
-    if (settings.autoOpen) void open($, false)
+    if (settings.autoOpen) void openShelf($, false)
     else void refresh($, { everyMs: everyMs(false) })
     // Alerts need the moods at every poll; the footer alone can wait longer.
     // Only one session on the machine reads the transcripts (the shared section).
@@ -109,7 +109,7 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'tama' }, async ($, e) => {
-    await open($, true)
+    await openShelf($, true)
     // the main screen (tmux's default) seats the pane above the prompt, not docked on the right
     if (!e.presentation.isFullscreen) $.ui.toast('Shown above the prompt: run /tui fullscreen (or set "tui": "fullscreen" in settings) to dock it on the right.', { timeoutMs: 8000 })
     return { text: 'TamaClaudchi shelf opened.' }
@@ -291,7 +291,10 @@ let callsRead = 0
 let spent: { key: string; byId: Map<string, Spend> } = { key: '', byId: new Map() }
 
 export async function claudeDir($: EngineInterface): Promise<string> {
-  return (await $.env.get('CLAUDE_CONFIG_DIR')) || `${await $.env.get('HOME')}/.claude`
+  const configDir = await $.env.get('CLAUDE_CONFIG_DIR')
+  if (configDir) return configDir
+  const home = await $.env.get('HOME')
+  return `${home}/.claude`
 }
 
 // The process table, read once for a poll's checks; null where ps fails.
@@ -376,7 +379,8 @@ async function readMachine($: EngineInterface): Promise<{ key: string; domain: s
  * window, marked as elsewhere, and nothing here acts on it.
  */
 export async function readLive($: EngineInterface): Promise<Map<string, Live>> {
-  const dir = `${await claudeDir($)}/sessions`
+  const root = await claudeDir($)
+  const dir = `${root}/sessions`
   const { domain } = await machineOf($)
   const out = new Map<string, Live>()
   const seenIds = new Set<string>()
@@ -1169,7 +1173,8 @@ export async function renamePet($: EngineInterface, s: TamaSession, text: string
       $.ui.toast(`${nameOf(s)} is running again: rename it once the shelf shows it awake.`)
       return
     }
-    const projects = `${await claudeDir($)}/projects/`
+    const root = await claudeDir($)
+    const projects = `${root}/projects/`
     const isSafe = SESSION_ID.test(s.id) && s.path.startsWith(projects) && !s.path.includes('/../')
       && s.path.endsWith(`/${s.id}.jsonl`)
     const line = JSON.stringify({ type: 'custom-title', customTitle: name, sessionId: s.id })
