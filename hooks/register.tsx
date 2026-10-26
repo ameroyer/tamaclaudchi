@@ -191,14 +191,14 @@ let written = ''
  * The shelf another session has read, while its lease holds and it reads at
  * least as often as `everyMs`; null when this session should read for itself.
  */
-export async function followed($: EngineInterface, paths: Paths, me: string | null, now: number, everyMs: number): Promise<Shelf | null> {
+export async function followed($: EngineInterface, paths: Paths, mine: string | null, now: number, periodMs: number): Promise<Shelf | null> {
   let lease: Lease
   try {
     lease = JSON.parse(await $.fs.read(paths.lease)) as Lease
   } catch {
     return null // none yet, or caught mid-write: read for yourself this once
   }
-  if (lease?.schema !== SCHEMA || lease.by === me || now - lease.at > LEASE_POLLS * lease.everyMs || lease.everyMs > everyMs) return null
+  if (lease?.schema !== SCHEMA || lease.by === mine || now - lease.at > LEASE_POLLS * lease.everyMs || lease.everyMs > periodMs) return null
   const st = await $.fs.stat(paths.shelf).catch(() => null)
   if (!st || st.kind !== 'file') return last?.value ?? null
   if (!last || last.mtimeMs !== st.mtimeMs || last.size !== st.size) {
@@ -223,8 +223,8 @@ export async function claim($: EngineInterface, paths: Paths, lease: Omit<Lease,
 }
 
 /** Shares the shelf this session has read, when it differs from what it last wrote. */
-export async function share($: EngineInterface, paths: Paths, sessionsJson: string, disk: Disk | null) {
-  const text = `{"schema":${SCHEMA},"disk":${JSON.stringify(disk)},"sessions":${sessionsJson}}`
+export async function share($: EngineInterface, paths: Paths, sessionsJson: string, used: Disk | null) {
+  const text = `{"schema":${SCHEMA},"disk":${JSON.stringify(used)},"sessions":${sessionsJson}}`
   if (text === written) return
   const isFirst = !written
   await $.fs.write(paths.shelf, text).catch(() => undefined)
@@ -241,15 +241,15 @@ export async function share($: EngineInterface, paths: Paths, sessionsJson: stri
 // announces nothing (a pet already waiting when the session started is old news).
 let before: Map<string, Mood> | null = null
 
-export async function announce($: EngineInterface, shelf: TamaSession[], me: string | null, isReader: boolean) {
+export async function announce($: EngineInterface, shelf: TamaSession[], mine: string | null, isReader: boolean) {
   const prev = before
   before = new Map(shelf.filter(s => s.live).map(s => [s.id, s.mood]))
   if (settings.alerts === 'off') return
   const { needs, done } = news(shelf, prev)
   if (!needs.length && !done.length) return
   // your own prompt is in front of you here: the toast is for the others
-  for (const s of needs) if (s.id !== me) $.ui.toast(`▲ ${petName(s)} needs you${s.live?.waitingFor ? `: ${s.live.waitingFor}` : ''}`)
-  for (const s of done) if (s.id !== me) $.ui.toast(`✓ ${petName(s)} has finished and waits for you`)
+  for (const s of needs) if (s.id !== mine) $.ui.toast(`▲ ${petName(s)} needs you${s.live?.waitingFor ? `: ${s.live.waitingFor}` : ''}`)
+  for (const s of done) if (s.id !== mine) $.ui.toast(`✓ ${petName(s)} has finished and waits for you`)
   if (!isReader) return
   if (settings.alerts === 'toast and notification') {
     const lines = [
@@ -379,11 +379,11 @@ export async function readLive($: EngineInterface): Promise<Map<string, Live>> {
   const dir = `${await claudeDir($)}/sessions`
   const { domain } = await machineOf($)
   const out = new Map<string, Live>()
-  const seen = new Set<string>()
+  const seenIds = new Set<string>()
   forgetProcesses()
   for (const f of await $.fs.list(dir).catch(() => [])) {
     if (f.kind !== 'file' || !f.name.endsWith('.json')) continue
-    seen.add(f.name)
+    seenIds.add(f.name)
     const stamp = `${f.mtimeMs}:${f.size}`
     let e = registry.get(f.name)
     if (e?.stamp !== stamp) {
@@ -425,7 +425,7 @@ export async function readLive($: EngineInterface): Promise<Map<string, Live>> {
     }
     out.set(e.id, e.live)
   }
-  for (const name of registry.keys()) if (!seen.has(name)) registry.delete(name)
+  for (const name of registry.keys()) if (!seenIds.has(name)) registry.delete(name)
   return out
 }
 
@@ -535,20 +535,20 @@ export async function refresh($: EngineInterface, opts: { everyMs?: number } = {
 }
 
 /** One pass of refresh. */
-async function readOnce($: EngineInterface, opts: { everyMs?: number }) {
+async function readOnce($: EngineInterface, opts: { periodMs?: number }) {
   try {
     const now = await $.clock.now()
     const dir = await claudeDir($)
     const mine = await read($, me)
-    const everyMs = opts.everyMs ?? settings.pollMs
+    const periodMs = opts.everyMs ?? settings.pollMs
     const paths = sharedPaths(dir, (await machineOf($)).key)
-    const other = await followed($, paths, mine, now, everyMs)
+    const other = await followed($, paths, mine, now, periodMs)
     // Taking over: claim the lease before a first read that may take seconds,
     // so the other sessions keep following the shelf as last shared rather
     // than each starting the same read.
     if (!other && mine && !isLeading) {
       takeOver()
-      await claim($, paths, { by: mine, at: now, everyMs })
+      await claim($, paths, { by: mine, at: now, everyMs: periodMs })
     }
     isLeading = !other && !!mine
     const { shelf, used } = other ? { shelf: other.sessions, used: other.disk } : await readShelf($, dir, now)
@@ -559,7 +559,7 @@ async function readOnce($: EngineInterface, opts: { everyMs?: number }) {
     // out of the shared file: each session reads that for the pet it opens.
     const isReader = !other && !!mine
     if (isReader) {
-      await claim($, paths, { by: mine, at: await $.clock.now(), everyMs })
+      await claim($, paths, { by: mine, at: await $.clock.now(), everyMs: periodMs })
       await share($, paths, JSON.stringify(shelf.map(s => ({ ...s, recent: [] }))), used)
     }
     if (text !== drawn.text || now - drawn.at > REDRAW_MS) {
@@ -1552,17 +1552,17 @@ const endColor = (v: View, end: End) => (end.id ? v.looks.get(end.id)?.skin.body
  * tab strip: each a filled block, the first nine opened with a digit. There
  * is no tab element: each tab is a button.
  */
-function mailTabs($: EngineInterface, e: PaneEvent, v: View, threads: Thread[], open: Thread, label: (t: Thread) => string) {
+function mailTabs($: EngineInterface, e: PaneEvent, v: View, threads: Thread[], shown: Thread, label: (t: Thread) => string) {
   const { Box, Text, Button } = $.ui.resolve(e)
   return (
     <Box flexDirection="column">
       <Box flexWrap="wrap" columnGap={1}>
         {threads.map((t, i) => {
-          const isOpen = t.key === open.key
-          const look = isOpen ? TAB_OPEN : TAB_SHUT
+          const isShown = t.key === shown.key
+          const look = isShown ? TAB_OPEN : TAB_SHUT
           return (
             <Button key={`mail-tab-${t.key}`} plain hotkey={i < DIGITS ? String(i + 1) : undefined} onPress={() => void openTab($, t.key)}>
-              <Text bold={isOpen} color={look.fg} backgroundColor={look.bg}>
+              <Text bold={isShown} color={look.fg} backgroundColor={look.bg}>
                 {' '}{i < DIGITS ? `${i + 1} ` : ''}{clip(label(t), TAB_W)} ({t.posts.length}){' '}
               </Text>
             </Button>
@@ -1616,7 +1616,7 @@ async function mailroomPage($: EngineInterface, e: PaneEvent, v: View) {
   const { Box, Text, Button } = $.ui.resolve(e)
   const k = kit($, e, v)
   const threads = threadsOf(postsOf(v.list))
-  const open = openThread(threads, await read($, mailTab))
+  const thread = openThread(threads, await read($, mailTab))
   const texts = await told($, v.list)
   return (
     <Box flexDirection="column">
@@ -1625,16 +1625,16 @@ async function mailroomPage($: EngineInterface, e: PaneEvent, v: View) {
         <Button key="mailroom-back" hotkey="m" plain label="← back to the shelf" autoFocus onPress={() => void openMailroom($, false)} />
       </Box>
       <Text dimColor wrap="wrap">What your sessions told each other {since()}: a tab per conversation, the latest first.</Text>
-      {!open ? <Text dimColor>No messages {since()}.</Text> : (
+      {!thread ? <Text dimColor>No messages {since()}.</Text> : (
         <Box flexDirection="column" marginTop={1}>
-          {mailTabs($, e, v, threads, open, t => `${clip(endName(v, t.ends[0]), 16)} ↔ ${clip(endName(v, t.ends[1]), 16)}`)}
+          {mailTabs($, e, v, threads, thread, t => `${clip(endName(v, t.ends[0]), 16)} ↔ ${clip(endName(v, t.ends[1]), 16)}`)}
           <Box gap={1} marginTop={1}>
-            {mailEnd($, e, v, open.ends[0].id, open.ends[0].name, 'mail-end-0')}
+            {mailEnd($, e, v, thread.ends[0].id, thread.ends[0].name, 'mail-end-0')}
             <Text dimColor>↔</Text>
-            {mailEnd($, e, v, open.ends[1].id, open.ends[1].name, 'mail-end-1')}
-            <Text dimColor>· {plural(open.posts.length, 'message')} · press a name to open its pet</Text>
+            {mailEnd($, e, v, thread.ends[1].id, thread.ends[1].name, 'mail-end-1')}
+            <Text dimColor>· {plural(thread.posts.length, 'message')} · press a name to open its pet</Text>
           </Box>
-          {threadView($, e, v, open, 0, texts)}
+          {threadView($, e, v, thread, 0, texts)}
         </Box>
       )}
     </Box>
@@ -1843,8 +1843,8 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
 async function agentPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, a: Agent) {
   const { Box, Text, Button } = $.ui.resolve(e)
   const k = kit($, e, v)
-  const read$ = await read($, trace)
-  const steps = read$?.id === a.id ? read$.steps : null
+  const shownTrace = await read($, trace)
+  const steps = shownTrace?.id === a.id ? shownTrace.steps : null
   const running = isAgentRunning(a, v.now)
   const tint = MODEL_SKIN[modelFamily(a.model)]!.body
   const maxW = Math.max(16, Math.floor(v.cols * 0.75))
