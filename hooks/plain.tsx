@@ -13,8 +13,8 @@ export const playing = new Map<string, { cancel: () => void }>()
 
 export type Disk = { tempDir: string; tempKb: number; logKb: number }
 
-/** Bumped when the files change shape: a session running another version reads for itself. */
-export const SCHEMA = 3
+/** Bumped when the files change shape; the files are named for it, so other versions share files of their own. */
+export const SCHEMA = 6
 export const LEASE_POLLS = 3
 
 /** What changed since the last poll, as lines to announce. */
@@ -149,6 +149,7 @@ done`
 // last reply, or a background agent's hand-back to its pet.
 export const SUBAGENT_SCRIPT = `for d in "$@"; do
   printf '\\036%s\\n' "$d"
+  printf 'T %s\\n' "$(find "$d" -maxdepth 1 -name 'agent-*.jsonl' 2>/dev/null | wc -l)"
   find "$d" -maxdepth 1 -name 'agent-*.jsonl' -mmin -10 2>/dev/null | while read -r f; do
     tail -n 2 "$f" | grep -c -e '"stop_reason":"end_turn"' -e '"name":"SubagentHandback"'
   done
@@ -311,15 +312,13 @@ export type PaneEvent = RenderInput<'Pane'>
 /** How many graves the graveyard draws at once; a search narrows the rest. */
 export const GRAVES_SHOWN = 40
 export const CARD_W = 24
-/** The card's jump button, `🏠 jump to pane`, in cells. */
-export const JUMP_W = 15
 /** A subagent's card on its pet's page: the half-size pet, its task, its state. */
 export const AGENT_W = 18
 /** A card shows its pet's disk use from this much (KiB); its page always does. */
 export const CARD_DISK_KB = 100 * 1024
 /** How many steps of a subagent's trace are drawn, the newest. */
 export const STEPS_SHOWN = 200
-/** Cards opened by a digit key, the first so many on the page. */
+/** Cards and conversation tabs opened by a digit key, the first so many. */
 export const DIGITS = 9
 /** The spend page's top pets and repos. */
 export const SPEND_TOP = 8
@@ -358,6 +357,8 @@ export const HEADER = '#78dce8'
 export const HOVER = '#55ff55'
 export const PHONE = '📱' // on Remote Control
 export const GRAVE = '🪦' // the graveyard
+/** The background pill's fill, on a pet's page. */
+export const PILL_BG = '#d9d6dc'
 /** How many messages the messages page and a pet's page draw, the newest. */
 export const POSTS_SHOWN = 40
 
@@ -398,7 +399,7 @@ export const openThread = (threads: Thread[], tab: string | null) => threads.fin
 
 export const TITLE = 'TamaClaudchi'
 /** The header says which copy of the mod a pane runs: keep in step with .claude-plugin/plugin.json. */
-export const VERSION = '0.1.0'
+export const VERSION = '0.1.5'
 /** With the pane closed and no alerts to raise, only the footer shows the pets: read them this many polls apart. */
 export const CLOSED_POLLS = 4
 /** With every face dozing, the footer moves one frame in this many. */
@@ -442,7 +443,7 @@ export type Shelf = { sessions: TamaSession[]; disk: Disk | null }
 
 export const sharedPaths = (configRoot: string, machine: string) => {
   const dir = `${configRoot}/tamaclaudchi`
-  return { dir, lease: `${dir}/lease-${machine}.json`, shelf: `${dir}/shelf-${machine}.json` }
+  return { dir, lease: `${dir}/lease-${machine}-v${SCHEMA}.json`, shelf: `${dir}/shelf-${machine}-v${SCHEMA}.json` }
 }
 export type Paths = ReturnType<typeof sharedPaths>
 
@@ -450,3 +451,56 @@ export type Paths = ReturnType<typeof sharedPaths>
 export const cleanable = (closed: TamaSession[]) => closed.filter(s => !s.live && (s.disk?.tempKb ?? 0) >= MIN_CLEAN_KB)
 
 export const WING = 'ʚɞ' // resurrect: a pair of little wings
+
+/**
+ * Two live entries for one session: a background session (claude --bg), and a
+ * `claude attach` showing it, which registers with the same id, as a session
+ * of its own, with its tmux pane but no job. The background process is the
+ * session; the attach lends it its pane, where a jump finds it.
+ */
+export function joined(a: Live | undefined, b: Live): Live {
+  const bg = a?.job ? a : b.job ? b : null
+  if (!a || !bg) return b
+  return { ...bg, tmux: bg.tmux ?? (bg === a ? b : a).tmux }
+}
+
+/**
+ * The tmux client showing a pane where `claude attach <job>` runs, the most
+ * recently used if several do, from `ps -o pid=,ppid=,args=`, panes as
+ * `<pane pid> <session id>` and clients as `<activity> <session id> <name>`.
+ */
+export function attachClient(job: string, ps: string, panes: string, clients: string): string | null {
+  const parent = new Map<number, number>()
+  const attaches: number[] = []
+  for (const l of ps.split('\n')) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(l)
+    if (!m) continue
+    parent.set(Number(m[1]), Number(m[2]))
+    const args = m[3]!.trim().split(/\s+/)
+    const at = args.indexOf('attach')
+    if (at > 0 && /(^|\/)claude$/.test(args[at - 1]!) && args[at + 1] === job) attaches.push(Number(m[1]))
+  }
+  const sessionOf = new Map(panes.split('\n').filter(Boolean).map(l => {
+    const [pid, session] = l.split(' ')
+    return [Number(pid), session!] as const
+  }))
+  // up from each attach through its parents to the pane it runs in
+  const shown = new Set<string>()
+  for (let p of attaches) {
+    for (let n = 0; p > 1 && n < 8; n++, p = parent.get(p) ?? 0) {
+      const session = sessionOf.get(p)
+      if (session) { shown.add(session); break }
+    }
+  }
+  const seen = clients.split('\n').map(l => l.split(' ')).filter(([, session, name]) => name && shown.has(session!))
+    .sort((a, b) => Number(b[0]) - Number(a[0]))
+  return seen[0]?.slice(2).join(' ') ?? null
+}
+
+/**
+ * The file a session running the mod leaves, named for it, so another's shelf
+ * knows a rename sent there is taken by the mod rather than read by its model.
+ */
+export const markerOf = (dir: string, id: string) => `${dir}/tamaclaudchi/running-${id}`
+/** How often the reading session deletes the markers of ended sessions. */
+export const PRUNE_MS = 10 * 60_000
