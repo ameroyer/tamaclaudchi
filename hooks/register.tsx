@@ -1190,7 +1190,7 @@ export async function jump($: EngineInterface, s: TamaSession) {
  * the attach command is copied.
  */
 async function attachJob($: EngineInterface, job: string, name: string) {
-  if (!(await $.env.get('TMUX'))) {
+  if ((await clientOf($)) === null) {
     await copyText($, `claude attach ${job}`, 'Not inside tmux here, so the attach command')
     return
   }
@@ -1206,18 +1206,69 @@ async function attachJob($: EngineInterface, job: string, name: string) {
 }
 
 /**
- * Switches this tmux client to a pane, found by its id so a renamed session is
+ * The tmux client this session is seen in: its own ('') when it runs inside
+ * tmux, else, for a background session (claude --bg), the one showing an
+ * attach to it; null when none does.
+ */
+async function clientOf($: EngineInterface): Promise<string | null> {
+  if (await $.env.get('TMUX')) return ''
+  const mine = await read($, me)
+  const job = (await read($, sessions)).find(s => s.id === mine)?.live?.job
+  if (!job) return null
+  const ps = await run($, ['ps', '-A', '-o', 'pid=,ppid=,args='])
+  const panes = await run($, ['tmux', 'list-panes', '-a', '-F', '#{pane_pid} #{session_id}'])
+  const clients = await run($, ['tmux', 'list-clients', '-F', '#{client_activity} #{session_id} #{client_name}'])
+  if (ps.exitCode !== 0 || panes.exitCode !== 0 || clients.exitCode !== 0) return null
+  return attachClient(job, ps.stdout, panes.stdout, clients.stdout)
+}
+
+/**
+ * The tmux client showing a pane where `claude attach <job>` runs, the most
+ * recently used if several do, from `ps -o pid=,ppid=,args=`, panes as
+ * `<pane pid> <session id>` and clients as `<activity> <session id> <name>`.
+ */
+export function attachClient(job: string, ps: string, panes: string, clients: string): string | null {
+  const parent = new Map<number, number>()
+  const attaches: number[] = []
+  for (const l of ps.split('\n')) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(l)
+    if (!m) continue
+    parent.set(Number(m[1]), Number(m[2]))
+    const args = m[3]!.trim().split(/\s+/)
+    const at = args.indexOf('attach')
+    if (at > 0 && /(^|\/)claude$/.test(args[at - 1]!) && args[at + 1] === job) attaches.push(Number(m[1]))
+  }
+  const sessionOf = new Map(panes.split('\n').filter(Boolean).map(l => {
+    const [pid, session] = l.split(' ')
+    return [Number(pid), session!] as const
+  }))
+  // up from each attach through its parents to the pane it runs in
+  const shown = new Set<string>()
+  for (let p of attaches) {
+    for (let n = 0; p > 1 && n < 8; n++, p = parent.get(p) ?? 0) {
+      const session = sessionOf.get(p)
+      if (session) { shown.add(session); break }
+    }
+  }
+  const seen = clients.split('\n').map(l => l.split(' ')).filter(([, session, name]) => name && shown.has(session!))
+    .sort((a, b) => Number(b[0]) - Number(a[0]))
+  return seen[0]?.slice(2).join(' ') ?? null
+}
+
+/**
+ * Switches the tmux client this session is seen in to a pane, found by its id so a renamed session is
  * still found; outside tmux, copies how to attach.
  */
 async function jumpTo($: EngineInterface, target: string, name: string) {
   const window = target.split('.')[0]!
   const pane = target.includes('%') ? tmuxPane(target) : window
-  // switch only this session's own tmux client: outside tmux, another one would be moved
-  if (!(await $.env.get('TMUX'))) {
+  // switch only the tmux client this session is seen in: outside tmux, another one would be moved
+  const client = await clientOf($)
+  if (client === null) {
     await copyText($, `tmux attach -t ${shellQuote(window)} \\; select-pane -t ${shellQuote(pane)}`, 'Not inside tmux here, so the attach command')
     return
   }
-  const switched = await run($, ['tmux', 'switch-client', '-t', pane])
+  const switched = await run($, ['tmux', 'switch-client', ...(client ? ['-c', client] : []), '-t', pane])
   if (switched.exitCode !== 0) {
     // its pane is gone, or on another tmux server than this one
     $.ui.toast(`Could not jump to ${name}: ${switched.stderr.trim().split('\n')[0] || 'tmux could not switch to its pane'}.`)
