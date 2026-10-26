@@ -272,8 +272,8 @@ test('a pet left waiting on you for a while looks sad, until it falls asleep', a
 
 test('a session follows the shelf another reads while its lease holds, and takes over when it lapses', async () => {
   const paths = { dir: '/h/.claude/tamaclaudchi', lease: '/h/.claude/tamaclaudchi/lease-m.json', shelf: '/h/.claude/tamaclaudchi/shelf-m.json' }
-  let lease = { schema: 3, by: 'other', at: NOW, everyMs: 4000 }
-  const shelf = { schema: 3, disk: null, sessions: [] }
+  let lease = { schema: 4, by: 'other', at: NOW, everyMs: 4000 }
+  const shelf = { schema: 4, disk: null, sessions: [] }
   // the reads it makes, as the engine's fs would answer them
   const $ = { fs: {
     stat: async () => ({ kind: 'file', size: JSON.stringify(shelf).length, mtimeMs: 1, isLink: false }),
@@ -656,8 +656,8 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     expect(JSON.stringify(await ui.drawn())).toContain('v0.1.0')
     // the shelf was read here, and left for the other sessions on this machine,
     // without what the sessions said
-    expect(JSON.parse(written.get('/h/.claude/tamaclaudchi/lease-f3c19270a4e1.json') ?? '{}').by).toBe('me')
-    const sharedShelf = JSON.parse(written.get('/h/.claude/tamaclaudchi/shelf-f3c19270a4e1.json') ?? '{}')
+    expect(JSON.parse(written.get('/h/.claude/tamaclaudchi/lease-f3c19270a4e1-v4.json') ?? '{}').by).toBe('me')
+    const sharedShelf = JSON.parse(written.get('/h/.claude/tamaclaudchi/shelf-f3c19270a4e1-v4.json') ?? '{}')
     expect(sharedShelf.sessions.find((x: { id: string }) => x.id === 'b').recent).toEqual([])
     // e runs on another machine: on the shelf, but nothing here may jump to, kill or resurrect it
     expect(await ui.find({ type: 'Text', text: /another machine/ })).toBeDefined()

@@ -104,13 +104,16 @@ type Lease = {
 
 export type Shelf = { sessions: TamaSession[]; disk: Disk | null }
 
-/** Bumped when the files change shape: a session running another version reads for itself. */
-const SCHEMA = 3
+/**
+ * Bumped when the files change shape. The files are named for it, so sessions
+ * running another version share files of their own rather than fight over these.
+ */
+const SCHEMA = 4
 const LEASE_POLLS = 3
 
 export const sharedPaths = (claudeDir: string, machine: string) => {
   const dir = `${claudeDir}/tamaclaudchi`
-  return { dir, lease: `${dir}/lease-${machine}.json`, shelf: `${dir}/shelf-${machine}.json` }
+  return { dir, lease: `${dir}/lease-${machine}-v${SCHEMA}.json`, shelf: `${dir}/shelf-${machine}-v${SCHEMA}.json` }
 }
 type Paths = ReturnType<typeof sharedPaths>
 
