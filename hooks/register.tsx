@@ -781,6 +781,10 @@ async function readOnce($: EngineInterface, opts: { everyMs?: number }) {
 /** Reads the shelf off disk: what changed in the transcripts since the last read, the registry, disk and spend. */
 async function readShelf($: EngineInterface, dir: string, now: number): Promise<{ shelf: TamaSession[]; used: Disk | null }> {
   const live = await readLive($)
+  if (now - prunedAt > PRUNE_MS) {
+    prunedAt = now
+    await pruneMarkers($, dir, live)
+  }
   const root = `${dir}/projects`
   const files = await listTranscripts($, root, now, live)
   const stale = files.filter(f => cache.get(f.path)?.stamp !== f.stamp)
@@ -1488,6 +1492,45 @@ export async function copyPath($: EngineInterface, path: string) {
   await copyText($, path, 'The path')
 }
 
+/** Opens the rename field on a pet, or closes it, and puts the keyboard in it. */
+async function startRename($: EngineInterface, id: string) {
+  const was = await read($, renaming)
+  await update($, renaming, () => (was === id ? null : id))
+  // the pane may not hold the keyboard (a click elsewhere): then the field waits for a click
+  if (was !== id) await $.ui.focus({ requestId: PANE, key: 'rename-name' }).catch(() => undefined)
+}
+
+/**
+ * The file a session running the mod leaves, named for it, so another's shelf
+ * knows a rename sent there is taken by the mod rather than read by its model.
+ */
+const markerOf = (dir: string, id: string) => `${dir}/tamaclaudchi/running-${id}`
+
+/** Leaves this session's marker. */
+async function markRunning($: EngineInterface, id: string) {
+  if (!SESSION_ID.test(id)) return
+  const dir = await claudeDir($)
+  await run($, ['mkdir', '-p', `${dir}/tamaclaudchi`])
+  await $.fs.write(markerOf(dir, id), '').catch(() => undefined)
+}
+
+/** Whether a running session runs the mod: its marker was left since its process started. */
+async function runsMod($: EngineInterface, s: TamaSession): Promise<boolean> {
+  if (!SESSION_ID.test(s.id)) return false
+  const st = await $.fs.stat(markerOf(await claudeDir($), s.id)).catch(() => null)
+  return !!st && st.kind === 'file' && st.mtimeMs >= (s.live?.startedMs ?? 0)
+}
+
+/** Deletes the markers of sessions no longer running; the reading session does it now and then. */
+async function pruneMarkers($: EngineInterface, dir: string, live: Map<string, Live>) {
+  for (const f of await $.fs.list(`${dir}/tamaclaudchi`).catch(() => [])) {
+    const id = f.name.startsWith('running-') ? f.name.slice('running-'.length) : ''
+    if (f.kind === 'file' && SESSION_ID.test(id) && !live.has(id)) await run($, ['rm', '-f', `${dir}/tamaclaudchi/${f.name}`])
+  }
+}
+const PRUNE_MS = 10 * 60_000
+let prunedAt = 0
+
 /** What leads a message asking a pet to rename itself: its own copy of the mod takes it, its model never reads it. */
 export const RENAME_TAG = '[tamaclaudchi rename] '
 /** A name as `/rename` takes it: one line, not too long. */
@@ -1508,6 +1551,13 @@ export async function renamePet($: EngineInterface, s: TamaSession, text: string
     $.ui.toast(`${nameOf(s)} runs on another machine: rename it there.`)
     return
   } else if (s.live) {
+    // a session without the mod (started before it was installed, or with it
+    // off) would hand the message to its model, which cannot rename itself
+    if (!(await runsMod($, s))) {
+      const copied = await $.ui.copy({ text: `/rename ${name}` })
+      $.ui.toast(`${nameOf(s)} does not run TamaClaudchi (started before it was installed?): run /rename ${name} in it${copied.isCopied ? ', on your clipboard' : ''}.`)
+      return
+    }
     const sent = await $.session.send({ to: { sessionId: s.id }, text: RENAME_TAG + name })
     if (!sent.isDelivered) {
       $.ui.toast(`Could not rename ${nameOf(s)}: ${sent.reason}`)
@@ -2159,7 +2209,7 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
         {canJump(s.live) ? <Button key="jump" hotkey="j" plain label={`${HOME} jump to ${where}`} onPress={() => void jump($, s)} /> : null}
         {s.live ? null : <Button key="resurrect" hotkey="r" plain label={`${WING} resurrect`} onPress={() => void resurrect($, s)} />}
         <Button key="resume" hotkey="c" plain label="copy resume command" onPress={() => void copyResume($, s)} />
-        {Input && !s.live?.isElsewhere ? <Button key="rename" hotkey="e" plain label="✎ rename" onPress={() => void update($, renaming, id => id === s.id ? null : s.id)} /> : null}
+        {Input && !s.live?.isElsewhere ? <Button key="rename" hotkey="e" plain label="✎ rename" onPress={() => void startRename($, s.id)} /> : null}
         {s.live && !s.live.isElsewhere && s.id !== v.mine ? (
           armedId === s.id
             ? <Button key="kill" hotkey="k" plain label={`✕ press again: kill it${tmux ? ' and its tmux pane' : ''}`} onPress={() => void killPet($, s)} />
@@ -2175,8 +2225,10 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
       <Box flexDirection="column" alignItems="center" borderStyle="round" borderColor={MOOD[s.mood].border ?? o.skin.outline} paddingX={1}>
         {k.pet(s, 'detail-pet', true)}
         {isRenaming && Input ? (
-          <Box width={Math.min(maxW, 50)} flexDirection="column">
-            <Input key="rename-name" label="name" value={petName(s)} autoFocus submitLabel="rename" onSubmit={name => void renamePet($, s, name)} />
+          <Box width={Math.min(maxW, 50)} flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
+            <Text color={ACCENT} bold>✎ new name</Text>
+            <Input key="rename-name" label="›" value={petName(s)} placeholder="type a name" autoFocus submitLabel="rename" onSubmit={name => void renamePet($, s, name)} />
+            <Text dimColor>Enter renames · Esc leaves the field</Text>
             <Button key="rename-cancel" plain dimColor label="cancel" onPress={() => void update($, renaming, () => null)} />
           </Box>
         ) : <Text bold wrap="truncate">{petName(s)}</Text>}
@@ -2412,7 +2464,10 @@ export const register: Register = (on, options) => {
     await update($, graveQuery, () => '')
     await update($, disk, () => null)
     await update($, sessions, () => [])
-    void $.session.id().then(id => update($, me, () => id))
+    void $.session.id().then(async id => {
+      await update($, me, () => id)
+      if (id) await markRunning($, id)
+    })
     await update($, version, () => VERSION)
     // Unasked, a pane seats from 144 columns and waits below that, so on a
     // wide terminal your pet greets you at start, as the logo would.
