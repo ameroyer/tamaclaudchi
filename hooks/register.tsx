@@ -11,7 +11,7 @@ import { mailFrames, outfits, petRest, ITEM_COUNT, itemKey, repoKey, SKIN_COUNT,
 import { lastDays, readCalls, spendOf, USAGE_AWK, dayOf, type Call } from './spend'
 import { lettersOf, MAIL_AWK, mailEdges, mailRead, PROMPT_AWK, readMail, postsOf, threadsOf, hasRecentMail, isFrom, type MailFact, type End, type Thread } from './mail'
 import { bytes, clip, vivid, ago, bytesShort, diskColor, GiB, lights, plural, tidy, tokenCount, usd, when, widest } from './format'
-import { ABS_PATH, AGENT_FILE, AGENT_ID, APPEND_LINE_SCRIPT, DOTS_ONLY, HOME_TILDE, PS_LINE, SPEND_SIGN, TMUX_SESSION_SIGIL, ACCENT, AGENTS_SCRIPT, AGENTS_SHOWN, AGENT_W, ASKING, AWAKE_SHOWN, BATCH, CANDIDATES, CARD_DISK_KB, CARD_H, CARD_W, CLEAN_ALL, CLOSED_POLLS, CONVO_BYTES, CONVO_PAGE, DIGITS, DISK_MS, DISK_SCRIPT, DOZE, DOZE_FRAMES, EGG_SHOWN_MS, FOOTER_FRAME_MS, FRESH_BATCH, GIT_SCRIPT, GIT_TREES, GRAVE, GRAVES_SHOWN, GREY, GROUPS, HEADER, HOVER, JUMP_W, LEASE_POLLS, LIST_SCRIPT, LSTART, MACHINE_SCRIPT, MAIL_CHARS, MAIL_FILES, MAIL_FRAME_MS, MAIL_SCRIPT, MAX_CLOSED, ME, MIN_CLEAN_KB, MOOD, NAME_W, OUTLINE, PHONE, POSTS_SHOWN, PROJECT_DIR, READ_SCRIPT, RECENT_WRITE_MS, RED, REDRAW_MS, RENAME_TAG, SCHEMA, SESSION_ID, SLOTS_KEY, SPEND_TOP, STEPS_SHOWN, SUBAGENT_SCRIPT, TAB_OPEN, TAB_SHUT, TAB_W, TEMP_DIR, TITLE, TMUX_PANE, TMUX_TARGET, USAGE_SCRIPT, VERSION, WAVE, cache, cleanName, closedSubs, dirOf, diskById, everyMs, factsOf, isAgentRunning, machineFrom, names, newMail, news, openThread, playing, readFrom, registry, sameStart, searchGraves, shellQuote, subCache, tmuxPane, tmuxSession, canJump, windowSpend, sharedPaths, cleanable, WING, type Lease, type Shelf, type Paths, type Disk, type Next, type PaneEvent, type Proc, type Told, type Transcript } from './plain'
+import { ABS_PATH, AGENT_FILE, AGENT_ID, APPEND_LINE_SCRIPT, DOTS_ONLY, HOME_TILDE, PS_LINE, SPEND_SIGN, TMUX_SESSION_SIGIL, ACCENT, AGENTS_SCRIPT, AGENTS_SHOWN, AGENT_W, ASKING, AWAKE_SHOWN, BATCH, CANDIDATES, CARD_DISK_KB, CARD_H, CARD_W, CLEAN_ALL, CLOSED_POLLS, CONVO_BYTES, CONVO_PAGE, DIGITS, DISK_MS, DISK_SCRIPT, DOZE, DOZE_FRAMES, EGG_SHOWN_MS, FOOTER_FRAME_MS, FRESH_BATCH, GIT_SCRIPT, GIT_TREES, GRAVE, GRAVES_SHOWN, GREY, GROUPS, HEADER, HOVER, LEASE_POLLS, LIST_SCRIPT, LSTART, MACHINE_SCRIPT, MAIL_CHARS, MAIL_FILES, MAIL_FRAME_MS, MAIL_SCRIPT, MAX_CLOSED, ME, MIN_CLEAN_KB, MOOD, NAME_W, OUTLINE, PHONE, POSTS_SHOWN, PROJECT_DIR, READ_SCRIPT, RECENT_WRITE_MS, RED, REDRAW_MS, RENAME_TAG, SCHEMA, SESSION_ID, SLOTS_KEY, SPEND_TOP, STEPS_SHOWN, SUBAGENT_SCRIPT, TAB_OPEN, TAB_SHUT, TAB_W, TEMP_DIR, TITLE, TMUX_PANE, TMUX_TARGET, USAGE_SCRIPT, VERSION, WAVE, cache, cleanName, closedSubs, dirOf, diskById, everyMs, factsOf, isAgentRunning, machineFrom, names, newMail, news, openThread, playing, readFrom, registry, sameStart, searchGraves, shellQuote, subCache, tmuxPane, tmuxSession, canJump, joined, attachClient, markerOf, PRUNE_MS, PILL_BG, windowSpend, sharedPaths, cleanable, WING, type Lease, type Shelf, type Paths, type Disk, type Next, type PaneEvent, type Proc, type Told, type Transcript } from './plain'
 
 // The values the mod reads or writes, one plugin and key each.
 const convo = atom({ plugin: 'tamaclaudchi', key: 'convo' } as const, null as { id: string; mtimeMs: number; said: Said[] } | null)
@@ -54,6 +54,7 @@ let footerTicks = 0
 async function learnId($: EngineInterface) {
   const id = await $.session.id()
   await update($, me, () => id)
+  if (id) await markRunning($, id)
 }
 
 /** One poll: every one while the pane is open or alerts are on, else a few apart. */
@@ -92,8 +93,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'tama', description: 'Open the TamaClaudchi shelf: every session, across folders, as a pet' })
     await update($, me, () => null)
-    // The host keeps these across a reload of the mod, when an older version
-    // may have written them in another shape: start again from the shelf.
+    // kept across a reload, maybe in an older shape: start from the shelf
     await update($, selected, () => null)
     await update($, agentPick, () => null)
     await update($, git, () => null)
@@ -117,12 +117,8 @@ export const register: Register = (on, options) => {
     await update($, sessions, () => [])
     learnId($)
     await update($, modVersion, () => VERSION)
-    // Unasked, a pane seats from 144 columns and waits below that, so on a
-    // wide terminal your pet greets you at start, as the logo would.
     if (settings.autoOpen) openShelf($, false)
     else refresh($, { everyMs: everyMs(false) })
-    // Alerts need the moods at every poll; the footer alone can wait longer.
-    // Only one session on the machine reads the transcripts (the shared section).
     pollCount = 0
     $.clock.every(settings.pollMs, () => {
       pollTick($)
@@ -137,12 +133,10 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'tama' }, async ($, e) => {
     await openShelf($, true)
-    // the main screen (tmux's default) seats the pane above the prompt, not docked on the right
     if (!e.presentation.isFullscreen) $.ui.toast('Shown above the prompt: run /tui fullscreen (or set "tui": "fullscreen" in settings) to dock it on the right.', { timeoutMs: 8000 })
     return { text: 'TamaClaudchi shelf opened.' }
   })
 
-  // another session's shelf asks this one's pet to rename itself (the actions section)
   on('session.receive', async ($, e, next) => {
     const at = e.text.indexOf(RENAME_TAG)
     if (e.origin.kind !== 'peer' || e.origin.plugin !== 'tamaclaudchi' || at < 0) return next(e)
@@ -251,8 +245,7 @@ export async function share($: EngineInterface, paths: Paths, sessionsJson: stri
 
 // Toasts, and one desktop notification, when a pet starts to need you (or finishes).
 
-// Each running pet's mood at the last poll; null before the first, which
-// announces nothing (a pet already waiting when the session started is old news).
+// Each running pet's mood at the last poll; null before the first (old news).
 let before: Map<string, Mood> | null = null
 
 export async function announce($: EngineInterface, shelf: TamaSession[], mine: string | null, isReader: boolean) {
@@ -278,8 +271,7 @@ export async function announce($: EngineInterface, shelf: TamaSession[], mine: s
 
 // A new message between sessions, played on the shelf: a letter thrown, a letter caught.
 
-// Each pet's ends of messages as of the last poll; null before the first,
-// which plays nothing (what was sent before the shelf opened is old news).
+// Each pet's ends of messages at the last poll; null before the first (old news).
 let seen: Set<string> | null = null
 
 /** Plays every message new since the last poll on its pets' cards. */
@@ -291,7 +283,6 @@ export function playMail($: EngineInterface, shelf: TamaSession[], now: number) 
   for (const { s, role } of fresh) {
     const o = looks.get(s.id)!
     const look = { faded: isAsleep(s, now), halo: !s.live, sad: isSad(s, now, settings.sadMs) }
-    // the card's own Raster; a pane that is closed or on another page denies the blit, which stops it
     playOnce($, `pet-${s.id}`, mailFrames(o, look, role), petRest(o, look).cells, MAIL_FRAME_MS)
   }
 }
@@ -343,8 +334,7 @@ export async function isRunning($: EngineInterface, pid: number, procStart: stri
     if (hasPid) return true
     const hasProc = await $.fs.exists('/proc/self')
     if (hasProc) return false
-    // no /proc at all (macOS): ask the process table, whose start times the
-    // registry writes alike
+    // no /proc (macOS): the process table
     const table = await processes($)
     if (!table) {
       const probe = await $.process.run(['kill', '-0', String(pid)]).catch(() => null)
@@ -436,7 +426,7 @@ export async function readLive($: EngineInterface): Promise<Map<string, Live>> {
     }
     if (!e.id || e.hasEnded) continue
     if (e.live.isElsewhere) {
-      if (Date.now() - e.updatedMs < settings.windowMs) out.set(e.id, e.live)
+      if (Date.now() - e.updatedMs < settings.windowMs) out.set(e.id, joined(out.get(e.id), e.live))
       continue
     }
     const isAlive = await isRunning($, e.live.pid, e.live.procStart)
@@ -444,7 +434,7 @@ export async function readLive($: EngineInterface): Promise<Map<string, Live>> {
       e.hasEnded = true
       continue
     }
-    out.set(e.id, e.live)
+    out.set(e.id, joined(out.get(e.id), e.live))
   }
   for (const name of registry.keys()) if (!seenIds.has(name)) registry.delete(name)
   return out
@@ -609,6 +599,10 @@ async function readOnce($: EngineInterface, opts: { periodMs?: number }) {
 /** Reads the shelf off disk: what changed in the transcripts since the last read, the registry, disk and spend. */
 async function readShelf($: EngineInterface, dir: string, now: number): Promise<{ shelf: TamaSession[]; used: Disk | null }> {
   const live = await readLive($)
+  if (now - prunedAt > PRUNE_MS) {
+    prunedAt = now
+    await pruneMarkers($, dir, live)
+  }
   const root = `${dir}/projects`
   const files = await listTranscripts($, root, now, live)
   const stale = files.filter(f => cache.get(f.path)?.stamp !== f.stamp)
@@ -629,8 +623,7 @@ async function readShelf($: EngineInterface, dir: string, now: number): Promise<
     if (!l && ++closed > MAX_CLOSED) continue
     shelf.push(withLive(s, l))
   }
-  // a session not yet spoken to has no transcript: an egg from its registry, so a
-  // freshly hatched pet can be opened and messaged at once
+  // no transcript yet: an egg from its registry, openable at once
   const onShelf = new Set(shelf.map(s => s.id))
   for (const [id, l] of live) {
     if (onShelf.has(id) || !SESSION_ID.test(id) || !l.cwd) continue
@@ -645,7 +638,8 @@ async function readShelf($: EngineInterface, dir: string, now: number): Promise<
   if (now - diskAt > DISK_MS) await readDisk($, root, shelf, now)
   const slots = await stickyLooks($, shelf, now)
   for (const s of shelf) {
-    s.subagents = working.get(s.id) ?? 0
+    s.subagents = working.get(s.id)?.working ?? 0
+    s.subagentsEver = working.get(s.id)?.ever ?? 0
     s.disk = diskById.get(s.id) ?? null
     s.skinSlot = slots.repo[repoKey(s)]?.[0] ?? null
     s.itemSlot = slots.item[itemKey(s)]?.[0] ?? null
@@ -760,16 +754,16 @@ async function readDisk($: EngineInterface, root: string, shelf: TamaSession[], 
   diskWhole = { tempDir, tempKb: kb.get(tempDir) ?? 0, logKb: kb.get(root) ?? 0 }
 }
 
-/** How many subagents each pet has still at work, by session id. */
-async function readSubagents($: EngineInterface, pets: TamaSession[]): Promise<Map<string, number>> {
-  const out = new Map<string, number>()
+/** How many subagents each pet has still at work, and has launched in all, by session id. */
+async function readSubagents($: EngineInterface, pets: TamaSession[]): Promise<Map<string, { working: number; ever: number }>> {
+  const out = new Map<string, { working: number; ever: number }>()
   const byDir = new Map(pets.filter(s => s.path).map(s => [`${dirOf(s)}/subagents`, s.id]))
   if (!byDir.size) return out
   const res = await $.process.run(['sh', '-c', SUBAGENT_SCRIPT, 'sh', ...byDir.keys()]).catch(() => null)
   for (const chunk of res?.stdout.split('\x1e').slice(1) ?? []) {
-    const [dir = '', ...finished] = chunk.split('\n')
+    const [dir = '', total = '', ...finished] = chunk.split('\n')
     const id = byDir.get(dir)
-    if (id) out.set(id, finished.filter(c => c.trim() === '0').length)
+    if (id) out.set(id, { working: finished.filter(c => c.trim() === '0').length, ever: Number(total.replace(/^T\s*/, '')) || 0 })
   }
   return out
 }
@@ -875,10 +869,7 @@ export async function readTrace($: EngineInterface, a: Agent) {
 
 // The buttons: tmux, messages, rename, kill, clean and resurrect.
 
-/**
- * Runs a command; one that cannot start at all (no tmux installed) reads as
- * a failed run, so every caller's fallback still happens.
- */
+/** Runs a command; one that cannot start (no tmux) reads as a failed run. */
 async function runCommand($: EngineInterface, argv: string[], opts: { timeoutMs?: number } = {}) {
   return $.process.run(argv, opts).catch((err: unknown) => (
     { exitCode: 127, stdout: '', stderr: String(err), isStdoutTruncated: false, isStderrTruncated: false }
@@ -965,8 +956,8 @@ export async function jump($: EngineInterface, s: TamaSession) {
 
 /** Opens a background session: `claude attach <job>` in a tmux session of its own, reused; outside tmux, copied. */
 async function attachJob($: EngineInterface, job: string, name: string) {
-  const tmuxEnv = await $.env.get('TMUX')
-  if (!tmuxEnv) {
+  const client = await clientOf($)
+  if (client === null) {
     await copyText($, `claude attach ${job}`, 'Not inside tmux here, so the attach command')
     return
   }
@@ -982,20 +973,18 @@ async function attachJob($: EngineInterface, job: string, name: string) {
   await jumpTo($, `${tmuxName}:`, name)
 }
 
-/**
- * Switches this tmux client to a pane, found by its id so a renamed session is
- * still found; outside tmux, copies how to attach.
- */
+/** Switches this session's tmux client to a pane, by its id; outside tmux, copies how to attach. */
 async function jumpTo($: EngineInterface, target: string, name: string) {
   const window = target.split('.')[0]!
   const pane = target.includes('%') ? tmuxPane(target) : window
-  // switch only this session's own tmux client: outside tmux, another one would be moved
-  const tmuxEnv = await $.env.get('TMUX')
-  if (!tmuxEnv) {
+  // switch only the tmux client this session is seen in: outside tmux, another one would be moved
+  const client = await clientOf($)
+  if (client === null) {
     await copyText($, `tmux attach -t ${shellQuote(window)} \\; select-pane -t ${shellQuote(pane)}`, 'Not inside tmux here, so the attach command')
     return
   }
-  const switched = await runCommand($, ['tmux', 'switch-client', '-t', pane])
+  const argv = client ? ['tmux', 'switch-client', '-c', client, '-t', pane] : ['tmux', 'switch-client', '-t', pane]
+  const switched = await runCommand($, argv)
   if (switched.exitCode !== 0) {
     // its pane is gone, or on another tmux server than this one
     $.ui.toast(`Could not jump to ${name}: ${switched.stderr.trim().split('\n')[0] || 'tmux could not switch to its pane'}.`)
@@ -1003,7 +992,22 @@ async function jumpTo($: EngineInterface, target: string, name: string) {
   }
   await runCommand($, ['tmux', 'select-window', '-t', pane])
   await runCommand($, ['tmux', 'select-pane', '-t', pane])
-  $.ui.toast(`Jumped to ${name}`)
+  $.ui.toast(`Attached to ${name}`)
+}
+
+/** The tmux client this session shows in: its own (''), an attach's for a --bg session, or null. */
+async function clientOf($: EngineInterface): Promise<string | null> {
+  const tmuxEnv = await $.env.get('TMUX')
+  if (tmuxEnv) return ''
+  const mine = await read($, me)
+  const pets = await read($, sessions)
+  const job = pets.find(s => s.id === mine)?.live?.job
+  if (!job) return null
+  const ps = await runCommand($, ['ps', '-A', '-o', 'pid=,ppid=,args='])
+  const panes = await runCommand($, ['tmux', 'list-panes', '-a', '-F', '#{pane_pid} #{session_id}'])
+  const clients = await runCommand($, ['tmux', 'list-clients', '-F', '#{client_activity} #{session_id} #{client_name}'])
+  if (ps.exitCode !== 0 || panes.exitCode !== 0 || clients.exitCode !== 0) return null
+  return attachClient(job, ps.stdout, panes.stdout, clients.stdout)
 }
 
 /** Copies `text`, as `<what> is on your clipboard`; where nothing was copied, the toast shows the text. */
@@ -1075,21 +1079,18 @@ export async function killPet($: EngineInterface, s: TamaSession) {
   const mine = await read($, me)
   if (!s.live || s.live.isElsewhere || s.id === mine) return
   const { pid, procStart, tmux } = s.live
-  // a claude started from this session's own shell shares its pane: taking
-  // that pane down would take this session with it
+  // a claude started from this session's shell shares its pane
   const myPane = await $.env.get('TMUX_PANE')
   if (tmux && tmuxPane(tmux) === myPane) {
     $.ui.toast(`${nameOf(s)} runs in this session's own tmux pane: close it from there.`)
     return
   }
   const done: string[] = []
-  // its pane, if it still runs this pet: a pane id is only good within one
-  // tmux server, and a restarted server gives the old numbers out again
+  // its pane, if it still runs this pet: a restarted server reuses pane ids
   let isPetPane = false
   if (tmux) isPetPane = await paneRuns($, tmuxPane(tmux), pid)
   if (isPetPane) {
-    // the pane's session as it is now, by id: the name the registry keeps may
-    // since have been renamed, or given to another session
+    // the pane's session by id: its registry name may be stale
     const pane = tmuxPane(tmux)
     const where = await runCommand($, ['tmux', 'display-message', '-p', '-t', pane, '#{session_id} #{session_name}'])
     const [sessionId = '', ...rest] = where.exitCode === 0 ? where.stdout.trim().split(' ') : []
@@ -1133,8 +1134,7 @@ async function cleanOne($: EngineInterface, s: TamaSession, tempDir: string, run
   const isSafe = TEMP_DIR.test(tempDir) && PROJECT_DIR.test(project) && !DOTS_ONLY.test(project)
     && file === `${s.id}.jsonl` && SESSION_ID.test(s.id)
   if (!isSafe) return 'unsafe'
-  // it may have been resurrected since the shelf was read; and one that wrote
-  // lately may be running where the registry does not say (an older Claude Code)
+  // resurrected since, or running unregistered (an older Claude Code)
   if (s.live || running.has(s.id) || Date.now() - s.mtimeMs < RECENT_WRITE_MS) return 'running'
   const res = await runCommand($, ['rm', '-rf', '--', `${tempDir}/${project}/${s.id}`], { timeoutMs: 120_000 })
   return res.exitCode === 0 ? 'cleaned' : res.stderr.trim().split('\n')[0] || 'rm failed'
@@ -1187,6 +1187,39 @@ export async function copyPath($: EngineInterface, path: string) {
   await copyText($, path, 'The path')
 }
 
+/** Opens the rename field on a pet, or closes it, and puts the keyboard in it. */
+async function startRename($: EngineInterface, id: string) {
+  const was = await read($, renaming)
+  await update($, renaming, () => (was === id ? null : id))
+  if (was !== id) await $.ui.focus({ requestId: PANE, key: 'rename-name' }).catch(() => undefined)
+}
+
+/** Leaves this session's marker. */
+async function markRunning($: EngineInterface, id: string) {
+  if (!SESSION_ID.test(id)) return
+  const claudeRoot = await claudeDir($)
+  await runCommand($, ['mkdir', '-p', `${claudeRoot}/tamaclaudchi`])
+  await $.fs.write(markerOf(claudeRoot, id), '').catch(() => undefined)
+}
+
+/** Whether a running session runs the mod: its marker was left since its process started. */
+async function runsMod($: EngineInterface, s: TamaSession): Promise<boolean> {
+  if (!SESSION_ID.test(s.id)) return false
+  const claudeRoot = await claudeDir($)
+  const st = await $.fs.stat(markerOf(claudeRoot, s.id)).catch(() => null)
+  return !!st && st.kind === 'file' && st.mtimeMs >= (s.live?.startedMs ?? 0)
+}
+
+/** Deletes the markers of sessions no longer running; the reading session does it now and then. */
+async function pruneMarkers($: EngineInterface, dir: string, live: Map<string, Live>) {
+  const entries = await $.fs.list(`${dir}/tamaclaudchi`).catch(() => [])
+  for (const f of entries) {
+    const id = f.name.startsWith('running-') ? f.name.slice('running-'.length) : ''
+    if (f.kind === 'file' && SESSION_ID.test(id) && !live.has(id)) await runCommand($, ['rm', '-f', `${dir}/tamaclaudchi/${f.name}`])
+  }
+}
+let prunedAt = 0
+
 /** Renames a pet as `/rename` would: here, by asking another running one, or in a closed one's transcript. */
 export async function renamePet($: EngineInterface, s: TamaSession, text: string) {
   await update($, renaming, () => null)
@@ -1199,14 +1232,20 @@ export async function renamePet($: EngineInterface, s: TamaSession, text: string
     $.ui.toast(`${nameOf(s)} runs on another machine: rename it there.`)
     return
   } else if (s.live) {
+    // without the mod, its model would read the rename
+    const isModded = await runsMod($, s)
+    if (!isModded) {
+      const copied = await $.ui.copy({ text: `/rename ${name}` })
+      $.ui.toast(`${nameOf(s)} does not run TamaClaudchi (started before it was installed?): run /rename ${name} in it${copied.isCopied ? ', on your clipboard' : ''}.`)
+      return
+    }
     const sent = await $.session.send({ to: { sessionId: s.id }, text: RENAME_TAG + name })
     if (!sent.isDelivered) {
       $.ui.toast(`Could not rename ${nameOf(s)}: ${sent.reason}`)
       return
     }
   } else {
-    // it may be running again since the shelf was read, here or on another
-    // machine: its transcript is then its own to write
+    // running again since? then its transcript is its own to write
     const live = await readLive($)
     if (live.has(s.id)) {
       $.ui.toast(`${nameOf(s)} is running again: rename it once the shelf shows it awake.`)
@@ -1250,8 +1289,7 @@ export async function renderFooter($: EngineInterface, e: RenderInput<'SessionMo
   const list = all.filter(s => s.live)
   if (!list.length) return next(e)
   const { Box, Text } = $.ui.resolve(e)
-  // the shelf's own colours, given out over every pet as the shelf gives them;
-  // each pet's hue at full strength, which a terminal of 16 colours keeps
+  // the shelf's colours, at full strength for 16-colour terminals
   const looks = outfits(all)
   const tint = (s: TamaSession) => vivid(looks.get(s.id)!.skin.body)
   const frame = await read($, footerFrame)
@@ -1260,7 +1298,6 @@ export async function renderFooter($: EngineInterface, e: RenderInput<'SessionMo
   const asleep = list.filter(s => s.mood !== 'busy' && s.mood !== 'needs')
   const awake = [...asking, ...busy].slice(0, AWAKE_SHOWN)
   const more = asking.length + busy.length - awake.length
-  // a hovered face's name shows in a fixed slot left of the faces, so the line keeps its width
   const group = (s: TamaSession) => `tama-face-${s.id}`.slice(0, 64)
   return (
     <Box>
@@ -1289,7 +1326,7 @@ export async function renderFooter($: EngineInterface, e: RenderInput<'SessionMo
 // The pane: the shelf, the graveyard, the spend and messages pages, and a pet's page.
 
 // one-cell glyphs only, but for these emoji every terminal draws two cells wide
-const HOME = '🏠' // jump to its tmux pane
+const HOME = '🏠' // attach: its tmux pane, or its background session
 const LETTER = '💌' // a message between sessions (✉ is text by default)
 type View = { list: TamaSession[]; mine: string | null; looks: Map<string, Outfit>; now: number; cols: number; seen: Record<string, number> }
 
@@ -1313,7 +1350,6 @@ export async function renderPane($: EngineInterface, e: PaneEvent) {
 /** What both pages draw a pet with. */
 function kit($: EngineInterface, e: PaneEvent, v: View) {
   const { Box, Text } = $.ui.resolve(e)
-  // a true-colour Raster on the terminal; no pointer layer here (the directory blocks Client)
   const art = (o: Outfit, key: string, look: { faded: boolean; halo?: boolean; sad?: boolean }, alt: string, isSmall = false) => {
     if (e.surface === 'terminal') {
       const { Raster } = $.ui.resolve(e)
@@ -1335,14 +1371,13 @@ function kit($: EngineInterface, e: PaneEvent, v: View) {
     const l = lights(s.contextTokens)
     return <Text><Text color={l.color}>{l.on}</Text><Text dimColor>{l.off} {l.pct}% ctx</Text></Text>
   }
-  // A section's title: larger where the surface has sizes; the terminal has
-  // one size, so there it is underlined, bold and cyan instead.
+  // a section's title: larger where the surface has sizes, else underlined
   const title = (text: string, arrow?: string) =>
     <Text bold size="heading" color={HEADER}>{arrow ? `${arrow} ` : ''}<Text underline>{text}</Text></Text>
   const note = (text: string) => <Text dimColor> · {text}</Text>
   const header = (text: string, aside?: string) =>
     <Box marginTop={1}><Text>{title(text)}{aside ? note(aside) : null}</Text></Box>
-  return { pet, agentPet, modelPill, ctx, title, note, header, brand: <Text bold color={ACCENT}>✿ TamaClaudchi</Text> }
+  return { pet, agentPet, modelPill, ctx, title, note, header, brand: <Text bold color={ACCENT}>✿ TamaClaudchi ✿</Text> }
 }
 
 /** The shelf: running pets in their rows, the graveyard, or the spend page in their place. */
@@ -1365,8 +1400,7 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
   const self = v.list.find(s => s.id === v.mine)
   const alive = v.list.filter(s => s.live || s.id === v.mine)
   const closed = v.list.filter(s => !s.live && s.id !== v.mine)
-  const others = alive.filter(s => s.id !== v.mine)
-  const folders = new Set(others.map(s => s.repo)).size
+  const folders = new Set(alive.map(s => s.repo)).size
   const { found, isRegexp } = searchGraves(closed, query)
   const graveKb = closed.reduce((n, s) => n + (s.disk?.tempKb ?? 0), 0)
   const toClean = cleanable(closed)
@@ -1392,8 +1426,7 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
   return (
     <Box flexDirection="column">
       {k.brand}
-      <Text dimColor>click a pet, or press its number, to open it · body = repo · hat = model · item = branch{mod ? ` · v${mod}` : ''}</Text>
-      {/* what Claude keeps on disk, orange then red past the thresholds in /config: time to clean up */}
+      <Text dimColor>Click a pet, or press its number, to open it</Text>
       {used ? (
         <Text wrap="truncate">
           <Text dimColor>Claude takes </Text>
@@ -1401,30 +1434,25 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
           <Text dimColor> on disk: {bytes(used.tempKb)} in {used.tempDir}, {bytes(used.logKb)} of transcripts</Text>
         </Text>
       ) : null}
-      {isGraveOpen ? null : (
-        <Box flexDirection="column">
-          {self ? null : <Text dimColor>Your pet hatches once this session has written its first reply.</Text>}
-          {spawning && Input ? (
-            <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
-              <Text bold color={ACCENT}>+ a new pet, in its own tmux session</Text>
-              <Input key="spawn-dir" label="folder" value={self?.cwd ?? '~'} autoFocus submitLabel="hatch" onSubmit={dir => spawnPet($, dir)} />
-              <Button key="spawn-cancel" plain dimColor label="cancel" onPress={() => update($, isSpawning, () => false)} />
-            </Box>
-          ) : (
-            <Box columnGap={2} flexWrap="wrap">
-              <Button key="spawn" hotkey="n" plain label="+ new pet" onPress={() => update($, isSpawning, () => true)} />
-              <Button key="spend" hotkey="s" plain label={`${SPEND_SIGN} spend · ${usd(spentToday)} today`} onPress={() => update($, showSpend, () => true)} />
-              {posts ? <Button key="mailroom" hotkey="m" plain label={`${LETTER} ${plural(posts, 'message')}`} onPress={() => openMailroom($, true)} /> : null}
-            </Box>
-          )}
-          <Text dimColor>{plural(others.length, 'other running pet')} across {plural(folders, 'folder')}</Text>
-        </Box>
-      )}
+      <Text dimColor>{plural(alive.length, 'running pet')} across {plural(folders, 'folder')}</Text>
       {isGraveOpen
         ? <Button key="graveyard" hotkey="g" plain label="← back to the shelf" onPress={openGraves(false)} />
-        : closed.length
-          ? <Button key="graveyard" hotkey="g" plain dimColor label={`${GRAVE} graveyard · ${closed.length} closed ${since()}`} onPress={openGraves(true)} />
-          : null}
+        : spawning && Input ? (
+          <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
+            <Text bold color={ACCENT}>+ a new pet, in its own tmux session</Text>
+            <Input key="spawn-dir" label="folder" value={self?.cwd ?? '~'} autoFocus submitLabel="hatch" onSubmit={dir => spawnPet($, dir)} />
+            <Button key="spawn-cancel" plain dimColor label="cancel" onPress={() => update($, isSpawning, () => false)} />
+          </Box>
+        ) : (
+          <Box columnGap={2} flexWrap="wrap">
+            <Button key="spawn" hotkey="n" plain label="+ new pet" onPress={() => update($, isSpawning, () => true)} />
+            {closed.length ? <Button key="graveyard" hotkey="g" plain label={`${GRAVE} graveyard · ${closed.length} closed`} onPress={openGraves(true)} /> : null}
+            <Button key="spend" hotkey="s" plain label={`${SPEND_SIGN} spend · ${usd(spentToday)} today`} onPress={() => update($, showSpend, () => true)} />
+            {posts ? <Button key="mailroom" hotkey="m" plain label={`${LETTER} ${plural(posts, 'message')}`} onPress={() => openMailroom($, true)} /> : null}
+          </Box>
+        )}
+      <Text>{mod ? <Text color={HEADER}>v{mod} </Text> : null}<Text dimColor>Legend: body = repo · hat = model · item = branch</Text></Text>
+      {isGraveOpen || self ? null : <Text dimColor>Your pet hatches once this session has written its first reply.</Text>}
       {isGraveOpen && !closed.length ? <Text dimColor>No pet has closed {since()}.</Text> : null}
       {isGraveOpen && closed.length && Input ? (
         <Box flexDirection="column" marginTop={1}>
@@ -1438,7 +1466,6 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
           </Text>
         </Box>
       ) : null}
-      {/* every closed pet's temp folder at once, in two presses; their transcripts stay */}
       {isGraveOpen && toClean.length ? (
         armedId === CLEAN_ALL
           ? <Button key="clean-all" hotkey="x" plain label={`✕ press again: delete ${bytes(cleanKb)} of temp files from ${plural(toClean.length, 'closed pet')} (transcripts stay)`} onPress={() => cleanAll($, closed)} />
@@ -1466,12 +1493,7 @@ function card($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?:
   const size = s.disk ? s.disk.tempKb + s.disk.logKb : 0
   const sad = isSad(s, v.now, settings.sadMs)
   const isMailed = hasRecentMail(s, v.now, v.seen[s.id])
-  // the jump button's whole label, a space, and the corner's marks (size,
-  // phone, letter: a gap between each) must fit in the card
-  const marks = [size >= CARD_DISK_KB ? bytesShort(size).length : 0, s.live?.isRemote ? 2 : 0, isMailed ? 2 : 0].filter(Boolean)
-  const crowded = JUMP_W + 1 + marks.reduce((a, b) => a + b, 0) + Math.max(0, marks.length - 1) > CARD_W - 2
   return (
-    // hovered, a card lights its repo's cards and gets a double outline over its border alone
     <Box key={`card-${s.id}`} position="relative" width={CARD_W}>
       <Box flexDirection="column" alignItems="center" width={CARD_W} height={isTerminal ? CARD_H : undefined}
         borderStyle={isMe ? 'double' : 'round'} borderColor={isMe ? ME : s.live ? MOOD[s.mood].border ?? o.skin.outline : GREY}
@@ -1479,34 +1501,32 @@ function card($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?:
         <Box width={CARD_W - 2} justifyContent="space-between">
           {isMe ? <Text bold color={ME}>★ you</Text>
             : !s.live ? <Button key={`wing-${s.id}`} plain label={`${WING} resurrect`} onPress={() => resurrect($, s)} />
-            : canJump(s.live) ? <Button key={`home-${s.id}`} plain label={crowded ? `${HOME} jump` : s.live.tmux ? `${HOME} jump to pane` : `${HOME} attach`} onPress={() => jump($, s)} />
+            : canJump(s.live) ? <Button key={`home-${s.id}`} plain label={`${HOME} attach`} onPress={() => jump($, s)} />
             : s.live.isElsewhere ? <Text dimColor>↗ another machine</Text>
             : <Text> </Text>}
           <Box gap={1}>
-            {/* a pet that takes room on disk says how much, orange past 1 GB and red past 5 */}
             {size >= CARD_DISK_KB
               ? <Text key={`disk-${s.id}`} color={size >= GiB ? diskColor(size, 1, 5) : undefined} dimColor={size < GiB}>{bytesShort(size)}</Text>
               : null}
             {s.live?.isRemote ? <Text key={`phone-${s.id}`}>{PHONE}</Text> : null}
-            {/* it sent or received a message lately */}
             {isMailed ? <Text key={`letter-${s.id}`}>{LETTER}</Text> : null}
           </Box>
         </Box>
         {k.pet(s, `pet-${s.id}`)}
-        {/* its name opens it: by Tab and Enter, its digit, or a click (the pet takes one too, on the terminal) */}
-        <Button key={`name-${s.id}`} plain hotkey={digit ? String(digit) : undefined} onPress={() => select($, s.id)}>
-          <Text bold wrap="truncate" dimColor={!s.live} color={isMe ? ME : undefined}>{petName(s)}</Text>
-        </Button>
+        <Box width={CARD_W - 2} justifyContent="center">
+          <Button key={`name-${s.id}`} plain hotkey={digit ? String(digit) : undefined} onPress={() => select($, s.id)}>
+            <Text bold dimColor={!s.live} color={isMe ? ME : undefined}>{clip(petName(s), CARD_W - 2 - (digit ? 3 : 0))}</Text>
+          </Button>
+        </Box>
         <Text color={o.skin.body} wrap="truncate">{s.repo}</Text>
         <Text dimColor wrap="truncate">⎇ {s.branch ?? '—'}</Text>
         <Box gap={1}>{k.modelPill(s)}{k.ctx(s)}</Box>
-        {/* the shelf's rows already say working or idle; a pet left waiting long says so */}
         {s.subagents ? <Text color={MOOD.busy.border!}>{plural(s.subagents, 'subagent')} working</Text>
           : sad ? <Text color={MOOD.waiting.border!} wrap="truncate">sad · left waiting {ago(v.now - s.mtimeMs).replace(' ago', '')}</Text>
+          : s.subagentsEver ? <Text dimColor>{plural(s.subagentsEver, 'subagent')} launched</Text>
           : <Text> </Text>}
         <Text dimColor>{s.bornMs ? `born ${ago(v.now - s.bornMs)}` : 'born ?'}</Text>
       </Box>
-      {/* unkeyed on purpose: their hover is the card's, the nearest keyed Box */}
       {isTerminal ? OUTLINE.map(([top, left, text]) => (
         <Box position="absolute" top={top} left={left} display="none" hover={{ display: 'flex' }}>
           <Text color={HOVER}>{text}</Text>
@@ -1702,7 +1722,6 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
   // the whole conversation once it is read; the shelf's short preview until then
   const said = talk?.id === s.id ? talk.said : s.recent
   const tmux = s.live?.tmux ? tmuxSession(s.live.tmux) : null
-  const where = tmux ? 'its tmux pane' : 'its background session'
   const mood = !s.live ? { ...MOOD.idle, label: '✝ closed' }
     : isAsleep(s, v.now) ? { ...MOOD.idle, label: 'zzz asleep' }
     : isSad(s, v.now, settings.sadMs) ? { ...MOOD.waiting, label: `sad: waiting on you for ${ago(v.now - s.mtimeMs).replace(' ago', '')}` }
@@ -1723,16 +1742,15 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
       <Box columnGap={2} flexWrap="wrap">
         {k.brand}
         <Button key="back" hotkey="b" plain label="back to the shelf" autoFocus onPress={() => select($, null)} />
-        {canJump(s.live) ? <Button key="jump" hotkey="j" plain label={`${HOME} jump to ${where}`} onPress={() => jump($, s)} /> : null}
+        {canJump(s.live) ? <Button key="jump" hotkey="a" plain label={`${HOME} attach`} onPress={() => jump($, s)} /> : null}
         {s.live ? null : <Button key="resurrect" hotkey="r" plain label={`${WING} resurrect`} onPress={() => resurrect($, s)} />}
         <Button key="resume" hotkey="c" plain label="copy resume command" onPress={() => copyResume($, s)} />
-        {Input && !s.live?.isElsewhere ? <Button key="rename" hotkey="e" plain label="✎ rename" onPress={() => update($, renaming, id => id === s.id ? null : s.id)} /> : null}
+        {Input && !s.live?.isElsewhere ? <Button key="rename" hotkey="e" plain label="✎ rename" onPress={() => startRename($, s.id)} /> : null}
         {s.live && !s.live.isElsewhere && s.id !== v.mine ? (
           armedId === s.id
             ? <Button key="kill" hotkey="k" plain label={`✕ press again: kill it${tmux ? ' and its tmux pane' : ''}`} onPress={() => killPet($, s)} />
             : <Button key="kill" hotkey="k" plain dimColor label="✕ kill" onPress={() => update($, armed, () => s.id)} />
         ) : null}
-        {/* a closed pet's temp folder: scratch files and task output, often big */}
         {!s.live && s.disk && s.disk.tempKb >= MIN_CLEAN_KB ? (
           armedId === s.id
             ? <Button key="clean" hotkey="x" plain label={`✕ press again: delete ${bytes(s.disk.tempKb)} of temp files (its transcript stays)`} onPress={() => cleanTemp($, s)} />
@@ -1742,13 +1760,18 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
       <Box flexDirection="column" alignItems="center" borderStyle="round" borderColor={MOOD[s.mood].border ?? o.skin.outline} paddingX={1}>
         {k.pet(s, 'detail-pet')}
         {isRenaming && Input ? (
-          <Box width={Math.min(maxW, 50)} flexDirection="column">
-            <Input key="rename-name" label="name" value={petName(s)} autoFocus submitLabel="rename" onSubmit={name => renamePet($, s, name)} />
+          <Box width={Math.min(maxW, 50)} flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
+            <Text color={ACCENT} bold>✎ new name</Text>
+            <Input key="rename-name" label="›" value={petName(s)} placeholder="type a name" autoFocus submitLabel="rename" onSubmit={name => renamePet($, s, name)} />
+            <Text dimColor>Enter renames · Esc leaves the field</Text>
             <Button key="rename-cancel" plain dimColor label="cancel" onPress={() => update($, renaming, () => null)} />
           </Box>
         ) : <Text bold wrap="truncate">{petName(s)}</Text>}
         <Text color={o.skin.body} wrap="truncate">{s.repo}{s.branch ? ` · ${s.branch}` : ''}</Text>
-        <Box gap={1}>{k.modelPill(s)}{k.ctx(s)}<Text color={mood.fg} backgroundColor={mood.bg}> {mood.label} </Text></Box>
+        <Box gap={1}>
+          {k.modelPill(s)}{k.ctx(s)}<Text color={mood.fg} backgroundColor={mood.bg}> {mood.label} </Text>
+          {s.live?.job ? <Text color="#3b3340" backgroundColor={PILL_BG}> ◐ background </Text> : null}
+        </Box>
         <Text dimColor wrap="truncate-start">{s.cwd}</Text>
         <Text dimColor>{lifeLine}</Text>
         {s.disk ? (
@@ -1757,7 +1780,6 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
             {' '}({bytes(s.disk.tempKb)} in its temp folder, {bytes(s.disk.logKb)} of logs)
           </Text>
         ) : null}
-        {/* at API list prices: its own calls and its subagents' */}
         {s.spend?.calls ? (
           <Text dimColor>
             spent <Text bold dimColor={false}>{usd(s.spend.usd)}</Text> at API prices
@@ -1808,7 +1830,6 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
             ))}
         </Box>
       ) : null}
-      {/* what it told the other sessions, and they it: sent on the right, as its own words */}
       {mail.length ? (
         <Box marginTop={1}>
           <Button key="mail-toggle" plain onPress={() => update($, showMail, x => !x)}>
@@ -1817,7 +1838,6 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
           </Button>
         </Box>
       ) : null}
-      {/* a tab per session it talked to; its own messages on the right, as its words */}
       {isMailOpen && openTalk ? (
         <Box flexDirection="column">
           {mailTabs($, e, v, talks, openTalk, t => endName(v, t.ends[otherEnd(t)]))}
@@ -1829,7 +1849,6 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
           {threadView($, e, v, openTalk, otherEnd(openTalk), texts)}
         </Box>
       ) : null}
-      {/* on the right, where your side of the conversation is */}
       {s.live && !s.live.isElsewhere && Input ? (
         <Box flexDirection="column" alignItems="flex-end" marginTop={1}>
           <Box width={maxW}>
@@ -1863,12 +1882,10 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
               </Box>
             )
           })}
-          {/* a long conversation is drawn a page at a time, the newest first */}
           {said.length > shownN
             ? <Button key="convo-more" plain dimColor label={`show ${Math.min(CONVO_PAGE, said.length - shownN)} older of ${said.length - shownN} more`} onPress={() => update($, convoShown, n => (n || CONVO_PAGE) + CONVO_PAGE)} />
             : null}
-          {/* the same as the top row's jump, for whoever has scrolled down here: j presses that one */}
-          {canJump(s.live) ? <Button key="jump-bottom" plain label={`j: see the full conversation on ${where}`} onPress={() => jump($, s)} /> : null}
+          {canJump(s.live) ? <Button key="jump-bottom" plain label="a: attach to see the full conversation" onPress={() => jump($, s)} /> : null}
         </Box>
       ) : null}
     </Box>
@@ -1891,7 +1908,7 @@ async function agentPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSessi
       <Box columnGap={2} flexWrap="wrap">
         {k.brand}
         <Button key="agent-back" hotkey="b" plain label={`back to ${clip(petName(s), 30)}`} autoFocus onPress={() => openAgent($, null)} />
-        {canJump(s.live) ? <Button key="jump" hotkey="j" plain label={`${HOME} jump to its pet's ${s.live!.tmux ? 'tmux pane' : 'background session'}`} onPress={() => jump($, s)} /> : null}
+        {canJump(s.live) ? <Button key="jump" hotkey="a" plain label={`${HOME} attach to its pet`} onPress={() => jump($, s)} /> : null}
       </Box>
       <Box flexDirection="row" gap={2} borderStyle="round" borderColor={running ? MOOD.busy.border! : GREY} paddingX={1}>
         {k.agentPet(s, a, 'agent-detail-pet')}
@@ -1901,7 +1918,6 @@ async function agentPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSessi
           <Text color={running ? MOOD.busy.border! : undefined} dimColor={!running}>
             {running ? '● working' : a.isDone ? '✓ done' : '◌ quiet'} · last wrote {ago(v.now - a.mtimeMs)}
           </Text>
-          {/* its whole log, which the trace below only shows the end of */}
           <Box gap={1}>
             <Text bold>Log:</Text>
             <Button key="agent-log" hotkey="c" plain label="copy path" onPress={() => copyPath($, a.path)} />

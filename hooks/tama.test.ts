@@ -9,8 +9,8 @@ import { costOf } from './pricing'
 import { vivid } from './format'
 import { MODEL_SKIN, REPO_SKINS } from './sprites'
 import { dayOf, readCalls, spendOf, type Call } from './spend'
-import { canTellApart, followed, forgetProcesses, isRunning, parentOf } from './register'
-import { machineFrom, newMail, news, searchGraves } from './plain'
+import { canTellApart, followed, readLive, forgetProcesses, isRunning, parentOf } from './register'
+import { attachClient, machineFrom, newMail, news, searchGraves } from './plain'
 import { hasRecentMail, isFrom, mailEdges, postsOf, readMail, threadsOf, type MailFact } from './mail'
 import { mailFrames } from './pets'
 import { settings } from './config'
@@ -273,8 +273,8 @@ test('a pet left waiting on you for a while looks sad, until it falls asleep', a
 
 test('a session follows the shelf another reads while its lease holds, and takes over when it lapses', async () => {
   const paths = { dir: '/h/.claude/tamaclaudchi', lease: '/h/.claude/tamaclaudchi/lease-m.json', shelf: '/h/.claude/tamaclaudchi/shelf-m.json' }
-  let lease = { schema: 3, by: 'other', at: NOW, everyMs: 4000 }
-  const shelf = { schema: 3, disk: null, sessions: [] }
+  let lease = { schema: 6, by: 'other', at: NOW, everyMs: 4000 }
+  const shelf = { schema: 6, disk: null, sessions: [] }
   // the reads it makes, as the engine's fs would answer them
   const $ = { fs: {
     stat: async () => ({ kind: 'file', size: JSON.stringify(shelf).length, mtimeMs: 1, isLink: false }),
@@ -546,12 +546,23 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
   })
   on('command.register', async () => ({ value: { command: 'tama' } }))
   on('ui.log', async () => ({ value: undefined }))
-  on('ui.toast', async () => ({ value: undefined }))
+  const toasts: string[] = []
+  on('ui.toast', async (_$, e) => (toasts.push(e.text), { value: undefined }))
+  const copies: string[] = []
+  on('ui.copy', async (_$, e) => (copies.push(e.text), { value: { isCopied: true as const } }))
+  // the markers sessions running the mod leave
+  const markers = new Set<string>()
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   on('fs.exists', async (_$, e) => ({ value: ALIVE.has(e.path) }))
-  on('fs.stat', async (_$, e) => (e.path === '/h/src/bramble' ? { value: { kind: 'dir' as const, size: 0, mtimeMs: now, isLink: false } } : { deny: 'ENOENT' }))
+  on('fs.stat', async (_$, e) => (
+    e.path === '/h/src/bramble' ? { value: { kind: 'dir' as const, size: 0, mtimeMs: now, isLink: false } }
+    : markers.has(e.path) ? { value: { kind: 'file' as const, size: 0, mtimeMs: now, isLink: false } }
+    : { deny: 'ENOENT' }))
   const reads: string[] = []
-  on('fs.read', async (_$, e) => (reads.push(e.path), { value: STATS[e.path] ?? JSON.stringify(REGISTRY[e.path]) }))
+  on('fs.read', async (_$, e) => (reads.push(e.path), {
+    // the mod's own manifest, for the version its legend shows
+    value: e.path.endsWith('/.claude-plugin/plugin.json') ? '{"name":"tamaclaudchi","version":"9.8.7"}' : STATS[e.path] ?? JSON.stringify(REGISTRY[e.path]),
+  }))
   // the shelf this session read, written for the other sessions on the machine
   const written = new Map<string, string>()
   on('fs.write', async (_$, e) => {
@@ -603,9 +614,9 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     if (e.argv[0] === 'sh' && e.argv[2]!.includes('-printf')) return ok(Object.keys(FILES).map(f =>
       `${(f.includes('/b.') ? now - 60_000 : f.includes('/c.') ? now - 2 * 3600_000 : now) / 1000}\t1\t${f}\n`).join(''))
     if (e.argv[0] === 'tmux') return ok('')
-    // b's subagents: two mid-task, one done
+    // b's subagents: two mid-task, one done, of five launched; `me` launched three, all done
     if (e.argv[0] === 'sh' && e.argv[2]!.includes('agent-*.jsonl'))
-      return ok(e.argv.slice(4).map(d => `\x1e${d}\n${d.includes('/b/') ? '0\n0\n1\n' : ''}`).join(''))
+      return ok(e.argv.slice(4).map(d => `\x1e${d}\n${d.includes('/b/') ? 'T 5\n0\n0\n1\n' : d.includes('/me/') ? 'T       3\n' : 'T 0\n'}`).join(''))
     const paths = e.argv.slice(4)
     const stdout = paths.map(p => {
       const id = p.split('/').pop()!.replace('.jsonl', '')
@@ -649,16 +660,19 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     // the groups say working or idle, so the cards carry no mood pill; b has two subagents at work
     expect(await ui.find({ type: 'Text', text: /needs you/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^2 subagents working$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /2 other running pets across 2 folders/ })).toBeDefined() // b here, e on another machine
+    // none at work: all it ever launched, in grey
+    expect((await ui.find({ type: 'Text', text: /^3 subagents launched$/ }))?.props.dimColor).toBe(true)
+    expect(await ui.find({ type: 'Text', text: /^3 running pets across 3 folders$/ })).toBeDefined() // you, b here, e on another machine
     // what Claude keeps on disk, red past 10 GB, and b's share on its card
     expect((await ui.find({ type: 'Text', text: /^12\.8 GB$/ }))?.props.color).toBe('#ff5555')
     expect(await ui.find({ type: 'Text', text: /^5\.7G$/ })).toBeDefined()
     // which copy of the mod this is, as its plugin.json says
-    expect(JSON.stringify(await ui.drawn())).toContain('v0.1.0')
+    expect((await ui.find({ type: 'Text', text: /^v0\.1\.5 $/ }))?.props.color).toBe('#78dce8') // VERSION, in step with its manifest
+    expect(await ui.find({ type: 'Text', text: /^Legend: body = repo/ })).toBeDefined()
     // the shelf was read here, and left for the other sessions on this machine,
     // without what the sessions said
-    expect(JSON.parse(written.get('/h/.claude/tamaclaudchi/lease-f3c19270a4e1.json') ?? '{}').by).toBe('me')
-    const sharedShelf = JSON.parse(written.get('/h/.claude/tamaclaudchi/shelf-f3c19270a4e1.json') ?? '{}')
+    expect(JSON.parse(written.get('/h/.claude/tamaclaudchi/lease-f3c19270a4e1-v6.json') ?? '{}').by).toBe('me')
+    const sharedShelf = JSON.parse(written.get('/h/.claude/tamaclaudchi/shelf-f3c19270a4e1-v6.json') ?? '{}')
     expect(sharedShelf.sessions.find((x: { id: string }) => x.id === 'b').recent).toEqual([])
     // e runs on another machine: on the shelf, but nothing here may jump to, kill or resurrect it
     expect(await ui.find({ type: 'Text', text: /another machine/ })).toBeDefined()
@@ -679,7 +693,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     // the killed session waits behind g
     expect(await ui.find({ type: 'Text', text: /Killed one/ })).toBeUndefined()
     expect(await ui.find({ key: 'graveyard' })).toBeDefined()
-    expect(JSON.stringify(await ui.drawn())).toContain('🪦 graveyard · 1 closed in the last 5 days')
+    expect(JSON.stringify(await ui.drawn())).toContain('🪦 graveyard · 1 closed')
     await ui.press({ key: 'graveyard' })
     expect(await ui.find({ type: 'Text', text: /Killed one/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /an ai title/ })).toBeUndefined()
@@ -784,7 +798,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     // a second way to its pane, below the conversation
     const bottom = JSON.stringify(await ui.drawn())
     expect(bottom.indexOf('"jump-bottom"')).toBeGreaterThan(bottom.indexOf('Conversation preview'))
-    expect(bottom).toContain('j: see the full conversation on its tmux pane')
+    expect(bottom).toContain('a: attach to see the full conversation')
     expect(await ui.find({ type: 'Text', text: /please fix the flaky test/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /📱 on Remote Control/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /needs you: permission prompt/ })).toBeDefined()
@@ -801,9 +815,20 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     expect(await ui.find({ key: 'jump' })).toBeDefined()
     await ui.input({ key: 'msg', text: 'how is it going?' })
     expect(sent.at(-1)).toEqual({ to: 'b', text: 'how is it going?' })
-    // a running pet is asked to rename itself: its own copy of the mod runs /rename
+    // a running pet without the mod would hand the message to its model: nothing is sent, /rename is copied
+    markers.delete('/h/.claude/tamaclaudchi/running-b') // left by the previous pass
+    const before = sent.length
     await ui.press({ key: 'rename' })
     await ui.input({ key: 'rename-name', text: '  flaky\ntest  hunter ' })
+    await clock.settle()
+    expect(sent.length).toBe(before)
+    expect(copies.at(-1)).toBe('/rename flaky test hunter')
+    expect(toasts.at(-1)).toContain('does not run TamaClaudchi')
+    // with the mod, it is asked to rename itself: its own copy of the mod runs /rename
+    markers.add('/h/.claude/tamaclaudchi/running-b')
+    await ui.press({ key: 'rename' })
+    await ui.input({ key: 'rename-name', text: '  flaky\ntest  hunter ' })
+    await clock.settle()
     expect(sent.at(-1)).toEqual({ to: 'b', text: '[tamaclaudchi rename] flaky test hunter' })
     expect(await ui.find({ key: 'rename-name' })).toBeUndefined()
     await ui.press({ key: 'back' })
@@ -996,4 +1021,44 @@ test("the messages page draws a tab per conversation, the open one filled, and a
   expect(await ui.find({ key: 'mail-tab-docs|me' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /Thanks, rebasing now/ })).toBeDefined()
   await ui.unmount()
+})
+
+test('a background session is seen in the tmux client showing an attach to it, the most recently used', async () => {
+  const ps = [
+    '  883056       1 claude --bg',
+    '  634826  177448 -bash',
+    '  662624  634826 /home/x/.local/bin/claude attach e0ff4760',
+    ' 2740182  177448 -bash',
+    '  298566 2740182 claude attach e0ff4760',
+    '  700000  634826 claude attach 12c5133a',
+    '  700001  634826 vim attach e0ff4760',
+  ].join('\n')
+  const panes = '634826 $209\n2740182 $12\n'
+  // $12 shows the other attach too, but was used longer ago
+  const clients = '1793031482 $209 /dev/pts/21\n1793000000 $12 /dev/pts/4\n1793039999 $3 /dev/pts/9\n'
+  expect(attachClient('e0ff4760', ps, panes, clients)).toBe('/dev/pts/21')
+  expect(attachClient('e0ff4760', ps, panes, '1793039999 $3 /dev/pts/9\n')).toBeNull() // no client shows it
+  expect(attachClient('deadbeef', ps, panes, clients)).toBeNull()
+})
+
+test('a background session keeps its job while attached, and takes the attach\'s pane', async () => {
+  // as Claude Code writes them: `claude attach e0ff4760` registers too, with the same session id
+  const bg = { pid: 1098008, sessionId: 'e0ff4760-8791', kind: 'bg', jobId: 'e0ff4760', status: 'shell', name: 'StreamingFinevision', messagingSocketPath: '/run/s.sock' }
+  const attach = { pid: 1168001, sessionId: 'e0ff4760-8791', kind: 'interactive', tmux: 'kestrel_zoo:@216.%242', name: 'kestrel-43' }
+  for (const files of [{ 'a.json': attach, 'b.json': bg }, { 'c.json': bg, 'd.json': attach }]) {
+    const $ = {
+      env: { get: async (k: string) => (k === 'HOME' ? '/h' : undefined) },
+      fs: {
+        list: async () => Object.keys(files).map(name => ({ name, kind: 'file', size: 1, mtimeMs: 1, isLink: false })),
+        read: async (path: string) => JSON.stringify((files as Record<string, object>)[path.split('/').pop()!]),
+        exists: async () => true,
+      },
+      process: { run: async () => ({ exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }) },
+    } as unknown as EngineInterface
+    const live = (await readLive($)).get('e0ff4760-8791')!
+    expect(live.pid).toBe(1098008)
+    expect(live.job).toBe('e0ff4760')
+    expect(live.tmux).toBe('kestrel_zoo:@216.%242')
+    expect(live.socket).toBe('/run/s.sock')
+  }
 })

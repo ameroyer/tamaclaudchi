@@ -46,7 +46,8 @@ claude
 - **Run Claude Code inside tmux** (`tmux new -s work`, then `claude`), so a pet
   can take you to its session, and you can hatch, resurrect and kill pets.
   A background session (`claude --bg`) opens with `claude attach` in a tmux
-  session of its own.
+  session of its own. From inside an attached background session, `a` moves
+  the tmux client showing that attach.
 - **Use the fullscreen layout** (`/tui fullscreen`) to dock the pane on the
   right. Otherwise it opens above the prompt.
 
@@ -87,7 +88,7 @@ to message it.
 | `s` | what the pets would cost at API prices | |
 | `m` | your sessions' conversations with each other | |
 | `b` | | back |
-| `j` | | jump to its tmux pane, or attach its background session |
+| `a` | | attach: go to its tmux pane, or open its background session |
 | `r` | | resurrect it (`claude --resume`) |
 | `e` | | rename it |
 | `c` | | copy its resume command |
@@ -126,7 +127,7 @@ In `/config`, under the plugin:
 
 - Claude Code 2.1.300 or later
 - Linux or macOS
-- tmux, for jumping, hatching, resurrecting and killing (optional)
+- tmux, for attaching, hatching, resurrecting and killing (optional)
 - git, for a pet's git activity (optional)
 
 ## Privacy
@@ -149,10 +150,14 @@ name under `~/.claude/tamaclaudchi/`.
 
 **What it writes.**
 
-- `~/.claude/tamaclaudchi/lease-<machine>.json` and `shelf-<machine>.json`: the
+- `~/.claude/tamaclaudchi/lease-<machine>-v<n>.json` and `shelf-<machine>-v<n>.json`: the
   lease that lets one session read for the whole machine, and what it found
   (names, folders, moods, spend; never what the sessions said). The folder is
   made readable by your user only (`chmod 700`).
+- `~/.claude/tamaclaudchi/running-<session id>`: an empty file each session
+  running the mod leaves, so another session's shelf only asks it to rename
+  itself when its copy of the mod will take the request (rather than its
+  model reading it). Deleted once the session has ended.
 - Renaming a *closed* pet (`e`) appends one `custom-title` line to the end of
   its transcript, exactly as `/rename` does. Only a `<session id>.jsonl` file
   under `~/.claude/projects/` is ever written.
@@ -184,10 +189,11 @@ process call, never through a shell with your input in the command:
 | `tail` | a pet's page | its latest conversation |
 | `cat /etc/machine-id`, `readlink`, `ioreg` | once | which machine this is (above) |
 | `chmod 700` | once | keep `~/.claude/tamaclaudchi/` to your user |
-| `tmux` (`display-message`, `switch-client`, `select-window`, `select-pane`, `new-session`, `has-session`, `list-sessions`, `send-keys`, `list-panes`, `kill-pane`, `kill-session`) | `j`, `n`, `r`, `k` | jump to a pet, hatch one (`claude` in a new tmux session), resurrect one (`claude --resume <id>`), kill one |
-| `claude attach <job>` in a new tmux session (`bg-<job>`) | `j` on a background session | open a session started with `claude --bg` (outside tmux, the command is copied instead) |
+| `tmux` (`display-message`, `switch-client`, `select-window`, `select-pane`, `new-session`, `has-session`, `list-sessions`, `send-keys`, `list-panes`, `list-clients`, `kill-pane`, `kill-session`) | `a`, `n`, `r`, `k` | attach to a pet (from a background session, `ps` finds the pane its attach runs in), hatch one (`claude` in a new tmux session), resurrect one (`claude --resume <id>`), kill one |
+| `claude attach <job>` in a new tmux session (`bg-<job>`) | `a` on a background session | open a session started with `claude --bg` (outside tmux, the command is copied instead) |
 | `kill -TERM`, then `kill -KILL` | `k` ×2 | kill a pet not in tmux, only once its process is sure to be that session |
 | `rm -rf` | `x` ×2 | clean a closed pet's temp folder (above) |
+| `mkdir -p`, `rm -f` | at start, and every 10 minutes | leave this session's `running-<session id>` marker (above), and delete the markers of ended sessions |
 | `sh -c 'printf … >> <transcript>'` | `e` on a closed pet | the rename line (above) |
 
 **Claude Code commands it runs.** `/rename <name>`, when you rename this
