@@ -545,10 +545,18 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
   })
   on('command.register', async () => ({ value: { command: 'tama' } }))
   on('ui.log', async () => ({ value: undefined }))
-  on('ui.toast', async () => ({ value: undefined }))
+  const toasts: string[] = []
+  on('ui.toast', async (_$, e) => (toasts.push(e.text), { value: undefined }))
+  const copies: string[] = []
+  on('ui.copy', async (_$, e) => (copies.push(e.text), { value: { isCopied: true as const } }))
+  // the markers sessions running the mod leave
+  const markers = new Set<string>()
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   on('fs.exists', async (_$, e) => ({ value: ALIVE.has(e.path) }))
-  on('fs.stat', async (_$, e) => (e.path === '/h/src/bramble' ? { value: { kind: 'dir' as const, size: 0, mtimeMs: now, isLink: false } } : { deny: 'ENOENT' }))
+  on('fs.stat', async (_$, e) => (
+    e.path === '/h/src/bramble' ? { value: { kind: 'dir' as const, size: 0, mtimeMs: now, isLink: false } }
+    : markers.has(e.path) ? { value: { kind: 'file' as const, size: 0, mtimeMs: now, isLink: false } }
+    : { deny: 'ENOENT' }))
   const reads: string[] = []
   on('fs.read', async (_$, e) => (reads.push(e.path), { value: STATS[e.path] ?? JSON.stringify(REGISTRY[e.path]) }))
   // the shelf this session read, written for the other sessions on the machine
@@ -815,9 +823,20 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     expect(await ui.find({ key: 'jump' })).toBeDefined()
     await ui.input({ key: 'msg', text: 'how is it going?' })
     expect(sent.at(-1)).toEqual({ to: 'b', text: 'how is it going?' })
-    // a running pet is asked to rename itself: its own copy of the mod runs /rename
+    // a running pet without the mod would hand the message to its model: nothing is sent, /rename is copied
+    markers.delete('/h/.claude/tamaclaudchi/running-b') // left by the previous pass
+    const before = sent.length
     await ui.press({ key: 'rename' })
     await ui.input({ key: 'rename-name', text: '  flaky\ntest  hunter ' })
+    await clock.settle()
+    expect(sent.length).toBe(before)
+    expect(copies.at(-1)).toBe('/rename flaky test hunter')
+    expect(toasts.at(-1)).toContain('does not run TamaClaudchi')
+    // with the mod, it is asked to rename itself: its own copy of the mod runs /rename
+    markers.add('/h/.claude/tamaclaudchi/running-b')
+    await ui.press({ key: 'rename' })
+    await ui.input({ key: 'rename-name', text: '  flaky\ntest  hunter ' })
+    await clock.settle()
     expect(sent.at(-1)).toEqual({ to: 'b', text: '[tamaclaudchi rename] flaky test hunter' })
     expect(await ui.find({ key: 'rename-name' })).toBeUndefined()
     await ui.press({ key: 'back' })

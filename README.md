@@ -147,6 +147,10 @@ name under `~/.claude/tamaclaudchi/`.
   lease that lets one session read for the whole machine, and what it found
   (names, folders, moods, spend; never what the sessions said). The folder is
   made readable by your user only (`chmod 700`).
+- `~/.claude/tamaclaudchi/running-<session id>`: an empty file each session
+  running the mod leaves, so another session's shelf only asks it to rename
+  itself when its copy of the mod will take the request (rather than its
+  model reading it). Deleted once the session has ended.
 - Renaming a *closed* pet (`e`) appends one `custom-title` line to the end of
   its transcript, exactly as `/rename` does. Only a `<session id>.jsonl` file
   under `~/.claude/projects/` is ever written.
