@@ -9,7 +9,7 @@ import { costOf } from './pricing'
 import { vivid } from './format'
 import { MODEL_SKIN, REPO_SKINS } from './sprites'
 import { dayOf, readCalls, spendOf, type Call } from './spend'
-import { canTellApart, followed, forgetProcesses, isRunning, machineFrom, newMail, news, parentOf, searchGraves } from './register'
+import { attachClient, canTellApart, followed, forgetProcesses, isRunning, machineFrom, newMail, news, parentOf, searchGraves } from './register'
 import { hasRecentMail, isFrom, mailEdges, postsOf, readMail, threadsOf, type MailFact } from './mail'
 import { mailFrames } from './pets'
 import { settings } from './config'
@@ -1013,4 +1013,22 @@ test("the messages page draws a tab per conversation, the open one filled, and a
   expect(await ui.find({ key: 'mail-tab-docs|me' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /Thanks, rebasing now/ })).toBeDefined()
   await ui.unmount()
+})
+
+test('a background session is seen in the tmux client showing an attach to it, the most recently used', async () => {
+  const ps = [
+    '  883056       1 claude --bg',
+    '  634826  177448 -bash',
+    '  662624  634826 /home/x/.local/bin/claude attach e0ff4760',
+    ' 2740182  177448 -bash',
+    '  298566 2740182 claude attach e0ff4760',
+    '  700000  634826 claude attach 12c5133a',
+    '  700001  634826 vim attach e0ff4760',
+  ].join('\n')
+  const panes = '634826 $209\n2740182 $12\n'
+  // $12 shows the other attach too, but was used longer ago
+  const clients = '1793031482 $209 /dev/pts/21\n1793000000 $12 /dev/pts/4\n1793039999 $3 /dev/pts/9\n'
+  expect(attachClient('e0ff4760', ps, panes, clients)).toBe('/dev/pts/21')
+  expect(attachClient('e0ff4760', ps, panes, '1793039999 $3 /dev/pts/9\n')).toBeNull() // no client shows it
+  expect(attachClient('deadbeef', ps, panes, clients)).toBeNull()
 })
