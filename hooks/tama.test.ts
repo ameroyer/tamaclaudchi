@@ -59,7 +59,7 @@ test('a quiet turn waits, a quiet tool call may need you', async () => {
 
 test('a running pet is as its registry says, however long its tool call takes', async () => {
   const live = (status: string | null, waitingFor: string | null = null) =>
-    ({ pid: 1, procStart: null, status, waitingFor, tmux: null, name: null, isRemote: false, isElsewhere: false, cwd: null, startedMs: null, socket: null })
+    ({ pid: 1, procStart: null, status, waitingFor, tmux: null, job: null, name: null, isRemote: false, isElsewhere: false, cwd: null, startedMs: null, socket: null })
   // a commit hook running for minutes: the tool call is old, but the session is busy
   const slow = parseSession('a', assistant('tool_use'), null, NOW - 5 * 60_000, NOW)
   expect(slow.mood).toBe('needs') // what the transcript alone would guess
@@ -240,7 +240,7 @@ test('spend counts each API call once, by its message id, and leaves unpriced mo
 test('an alert goes out when a pet starts to need you, and on finishing only when asked for', async () => {
   const pet = (id: string, mood: 'busy' | 'needs' | 'waiting' | 'idle') => ({
     ...parseSession(id, '', null, NOW, NOW), mood,
-    live: { pid: 1, procStart: null, status: null, waitingFor: null, tmux: null, name: null, isRemote: false, isElsewhere: false, cwd: null, startedMs: null, socket: null },
+    live: { pid: 1, procStart: null, status: null, waitingFor: null, tmux: null, job: null, name: null, isRemote: false, isElsewhere: false, cwd: null, startedMs: null, socket: null },
   })
   const prev = new Map([['a', 'busy' as const], ['b', 'needs' as const], ['c', 'busy' as const]])
   const shelf = [pet('a', 'needs'), pet('b', 'needs'), pet('c', 'waiting'), pet('d', 'needs')]
@@ -257,7 +257,7 @@ test('an alert goes out when a pet starts to need you, and on finishing only whe
 })
 
 test('a pet left waiting on you for a while looks sad, until it falls asleep', async () => {
-  const live = { pid: 1, procStart: null, status: 'idle', waitingFor: null, tmux: null, name: null, isRemote: false, isElsewhere: false, cwd: null, startedMs: null, socket: null }
+  const live = { pid: 1, procStart: null, status: 'idle', waitingFor: null, tmux: null, job: null, name: null, isRemote: false, isElsewhere: false, cwd: null, startedMs: null, socket: null }
   const waiting = withLive(parseSession('a', assistant('end_turn'), null, NOW - 45 * 60_000, NOW), live)
   expect(waiting.mood).toBe('waiting')
   expect(isSad(waiting, NOW, 30 * 60_000)).toBe(true)
@@ -349,7 +349,7 @@ const factsOf = (lines: string[]) => {
   return m
 }
 const liveOf = (pid: number, name: string) =>
-  ({ pid, procStart: null, status: 'idle', waitingFor: null, tmux: null, name, isRemote: false, isElsewhere: false, cwd: null, startedMs: null, socket: `/tmp/cc-socks/${pid}.sock` })
+  ({ pid, procStart: null, status: 'idle', waitingFor: null, tmux: null, job: null, name, isRemote: false, isElsewhere: false, cwd: null, startedMs: null, socket: `/tmp/cc-socks/${pid}.sock` })
 
 test('a message between two sessions is read from both ends, joined by its id, and one to a subagent is left out', async () => {
   const sent = factsOf(SENT), got = factsOf(RECEIVED)
@@ -445,7 +445,7 @@ test("a pet's letter shows until you catch up on it: typing to it there, or look
 })
 
 test('a message plays once on its pets, only when new, and its letter flies', async () => {
-  const live = { pid: 1, procStart: null, status: 'idle', waitingFor: null, tmux: null, name: null, isRemote: false, isElsewhere: false, cwd: null, startedMs: null, socket: null }
+  const live = { pid: 1, procStart: null, status: 'idle', waitingFor: null, tmux: null, job: null, name: null, isRemote: false, isElsewhere: false, cwd: null, startedMs: null, socket: null }
   const pet = (mail: TamaSession['mail']) => ({ ...parseSession('a', '', null, NOW, NOW), live, mail })
   const old = { id: 'm-1', at: NOW - 60_000, dir: 'out' as const, peer: 'b', peerName: 'bramble', ok: true }
   // the first poll plays nothing: it was sent before the shelf opened

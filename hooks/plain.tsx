@@ -274,6 +274,9 @@ export const TMUX_TARGET = '#{session_name}:#{window_id}.#{pane_id}'
 
 /** The session part of a tmux target, `session:@window.%pane`. */
 export const tmuxSession = (target: string) => target.split(':')[0]!
+
+/** Whether a pet can be jumped to: its tmux pane, or its background session. */
+export const canJump = (live: Live | null) => !!live && !live.isElsewhere && !!(live.tmux || live.job)
 /** The pane part, `%12`: which a renamed session keeps (a restarted tmux server counts again from %0). */
 export const tmuxPane = (target: string) => target.split('.').pop()!
 export const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
@@ -424,3 +427,26 @@ export const TMUX_SESSION_SIGIL = '$'
 export const APPEND_LINE_SCRIPT = 'printf \'%s\\n\' "$1" >> "$2"'
 /** The spend page's sign on its button. */
 export const SPEND_SIGN = '$'
+
+export type Lease = {
+  schema: number
+  /** The session holding the lease. */
+  by: string
+  /** When it last renewed it, ms since the epoch. */
+  at: number
+  /** How often it reads: a lease is good for LEASE_POLLS of those. */
+  everyMs: number
+}
+
+export type Shelf = { sessions: TamaSession[]; disk: Disk | null }
+
+export const sharedPaths = (configRoot: string, machine: string) => {
+  const dir = `${configRoot}/tamaclaudchi`
+  return { dir, lease: `${dir}/lease-${machine}.json`, shelf: `${dir}/shelf-${machine}.json` }
+}
+export type Paths = ReturnType<typeof sharedPaths>
+
+/** The closed pets whose temp folders a bulk clean would free. */
+export const cleanable = (closed: TamaSession[]) => closed.filter(s => !s.live && (s.disk?.tempKb ?? 0) >= MIN_CLEAN_KB)
+
+export const WING = 'ʚɞ' // resurrect: a pair of little wings
