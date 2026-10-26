@@ -1,12 +1,6 @@
 // TamaClaudchi in Claude Code: a pane with a pixel pet for every session on
-// this machine, across folders.
-//
-// Every function that takes the engine interface ($) is declared in this one
-// file, as the plugin directory asks ($ may not be passed to an imported
-// function); the other modules are plain helpers. Its sections, in order:
-// players (animations), shared (one session reads for the machine), alerts,
-// mailfx (a message's animation), shelf (reading the transcripts), actions
-// (the buttons), footer, view (the pane), and register (the hooks).
+// this machine. Every function that takes $ lives in this file, as the plugin
+// directory asks; plain.tsx and the other modules never touch $.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, RenderElement, RenderInput, Register } from 'claude-code'
@@ -19,6 +13,7 @@ import { mailFrames, outfits, petRest, ITEM_COUNT, itemKey, repoKey, SKIN_COUNT,
 import { lastDays, readCalls, spendOf, USAGE_AWK, dayOf, type Call } from './spend'
 import { lettersOf, MAIL_AWK, mailEdges, mailRead, PROMPT_AWK, readMail, postsOf, threadsOf, hasRecentMail, isFrom, type MailFact, type End, type Thread } from './mail'
 import { bytes, clip, vivid, ago, bytesShort, diskColor, GiB, lights, plural, tidy, tokenCount, usd, when, widest } from './format'
+import { ACCENT, AGENTS_SCRIPT, AGENTS_SHOWN, AGENT_W, ASKING, AWAKE_SHOWN, BATCH, CANDIDATES, CARD_DISK_KB, CARD_H, CARD_W, CLEAN_ALL, CLOSED_POLLS, CONVO_BYTES, CONVO_PAGE, DIGITS, DISK_MS, DISK_SCRIPT, DOZE, DOZE_FRAMES, EGG_SHOWN_MS, FOOTER_FRAME_MS, FRESH_BATCH, GIT_SCRIPT, GIT_TREES, GRAVE, GRAVES_SHOWN, GREY, GROUPS, HEADER, HOVER, JUMP_W, LEASE_POLLS, LIST_SCRIPT, LSTART, MACHINE_SCRIPT, MAIL_CHARS, MAIL_FILES, MAIL_FRAME_MS, MAIL_SCRIPT, MAX_CLOSED, ME, MIN_CLEAN_KB, MOOD, NAME_W, OUTLINE, PHONE, POSTS_SHOWN, PROJECT_DIR, READ_SCRIPT, RECENT_WRITE_MS, RED, REDRAW_MS, RENAME_TAG, SCHEMA, SESSION_ID, SLOTS_KEY, SPEND_TOP, STEPS_SHOWN, SUBAGENT_SCRIPT, TAB_OPEN, TAB_SHUT, TAB_W, TEMP_DIR, TITLE, TMUX_PANE, TMUX_TARGET, USAGE_SCRIPT, VERSION, WAVE, cache, cleanName, closedSubs, dirOf, diskById, everyMs, factsOf, isAgentRunning, machineFrom, names, newMail, news, openThread, playing, readFrom, registry, sameStart, searchGraves, shellQuote, subCache, tmuxPane, tmuxSession, windowSpend, type Disk, type Next, type PaneEvent, type Proc, type Told, type Transcript } from './plain'
 
 // The values the mod reads or writes, one plugin and key each.
 const convo = atom({ plugin: 'tamaclaudchi', key: 'convo' } as const, null as { id: string; mtimeMs: number; said: Said[] } | null)
@@ -48,16 +43,103 @@ const graveQuery = atom({ plugin: 'tamaclaudchi', key: 'graveQuery' } as const, 
 const showClosed = atom({ plugin: 'tamaclaudchi', key: 'showClosed' } as const, false)
 const isOpen = atom({ plugin: 'tamaclaudchi', key: 'isOpen' } as const, false)
 
-// ─── players ─────────────────────────────────────────────────────────────────
+// the pane's id, here so the hooks' matchers name it
+const PANE = 'tamaclaudchi'
 
-// The pets now playing frames into their Rasters, by Raster key: a hover loop
-// (the actions section) or a message's animation (the mailfx section). One at a time per pet: a
-// new one cancels the one before. A reload drops them, which only stops a pet
-// mid-hop.
+// --- register
 
-export const PANE = 'tamaclaudchi'
+async function open($: EngineInterface, focus: boolean) {
+  await update($, isOpen, () => true)
+  await refresh($)
+  return $.ui.open(focus ? { id: PANE, title: TITLE, focus: true } : { id: PANE, title: TITLE })
+}
 
-export const playing = new Map<string, { cancel: () => void }>()
+export const register: Register = (on, options) => {
+  applyOptions(options)
+
+  on('session.start', async ($, e, next) => {
+    await $.command.register({ name: 'tama', description: 'Open the TamaClaudchi shelf: every session, across folders, as a pet' })
+    await update($, me, () => null)
+    // The host keeps these across a reload of the mod, when an older version
+    // may have written them in another shape: start again from the shelf.
+    await update($, selected, () => null)
+    await update($, agentPick, () => null)
+    await update($, git, () => null)
+    await update($, convo, () => null)
+    await update($, agents, () => null)
+    await update($, trace, () => null)
+    await update($, showGit, () => false)
+    await update($, showConvo, () => false)
+    await update($, armed, () => null)
+    await update($, isSpawning, () => false)
+    await update($, renaming, () => null)
+    await update($, showClosed, () => false)
+    await update($, showSpend, () => false)
+    await update($, showMail, () => false)
+    await update($, showMailroom, () => false)
+    await update($, mailTab, () => null)
+    await update($, mailSeen, () => ({}))
+    await update($, mailText, () => null)
+    await update($, graveQuery, () => '')
+    await update($, disk, () => null)
+    await update($, sessions, () => [])
+    void $.session.id().then(id => update($, me, () => id))
+    await update($, version, () => VERSION)
+    // Unasked, a pane seats from 144 columns and waits below that, so on a
+    // wide terminal your pet greets you at start, as the logo would.
+    if (settings.autoOpen) void open($, false)
+    else void refresh($, { everyMs: everyMs(false) })
+    // Alerts need the moods at every poll; the footer alone can wait longer.
+    // Only one session on the machine reads the transcripts (the shared section).
+    let polls = 0
+    $.clock.every(settings.pollMs, () => void read($, isOpen).then(o => {
+      const ms = everyMs(o)
+      if (ms === settings.pollMs || ++polls % CLOSED_POLLS === 0) return refresh($, { everyMs: ms })
+    }))
+    // the footer's faces move: its next frame, while there are any (the footer
+    // alone reads the frame, so nothing else is drawn again); dozing faces
+    // alone snore slower, so an idle machine redraws less
+    let frames = 0
+    $.clock.every(FOOTER_FRAME_MS, () => void read($, sessions).then(list => {
+      const live = list.filter(s => s.live)
+      if (!live.length) return
+      if (live.some(s => s.mood === 'busy' || s.mood === 'needs') || ++frames % DOZE_FRAMES === 0) return update($, footerFrame, n => n + 1)
+    }))
+    return next(e)
+  })
+
+  on('command.run', { command: 'tama' }, async ($, e) => {
+    await open($, true)
+    // the main screen (tmux's default) seats the pane above the prompt, not docked on the right
+    if (!e.presentation.isFullscreen) $.ui.toast('Shown above the prompt: run /tui fullscreen (or set "tui": "fullscreen" in settings) to dock it on the right.', { timeoutMs: 8000 })
+    return { text: 'TamaClaudchi shelf opened.' }
+  })
+
+  // another session's shelf asks this one's pet to rename itself (the actions section)
+  on('session.receive', async ($, e, next) => {
+    const at = e.text.indexOf(RENAME_TAG)
+    if (e.origin.kind !== 'peer' || e.origin.plugin !== 'tamaclaudchi' || at < 0) return next(e)
+    const name = cleanName(e.text.slice(at + RENAME_TAG.length).split('\n')[0]!)
+    // queued for when the session is idle: not awaited, as this delivery waits on the hook
+    if (name) void $.command.run({ command: 'rename', args: name }).catch(err => $.ui.log(`tamaclaudchi: could not rename: ${String(err)}`))
+    return { consumed: 'a rename asked from another session\'s shelf' }
+  })
+
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    await update($, isOpen, () => false)
+    return next(e)
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => renderPane($, e))
+
+  // the footer, right of the prompt: every running pet as a little face
+  on('ui.render', { component: 'SessionMode' }, ($, e, next) => renderFooter($, e, next))
+}
+
+
+// --- players
+
+// Pets playing frames into their Rasters, by key: one animation at a time per pet.
 
 /** Plays `frames` once into a Raster, `ms` apart, then rests it; unless a hover loop plays there. */
 export function playOnce($: EngineInterface, key: string, frames: string[], rest: string, ms: number) {
@@ -77,20 +159,10 @@ export function playOnce($: EngineInterface, key: string, frames: string[], rest
   playing.set(key, entry)
 }
 
-// ─── shared ──────────────────────────────────────────────────────────────────
+// --- shared
 
-// The shelf is read once for every session on this machine, not once per
-// session: whichever session holds the lease reads the transcripts and
-// writes what it found to one file, and the others read that file. A lease
-// not renewed for a few of its polls is anyone's, so when its session closes
-// another takes over within seconds.
-//
-// Two files, each named for this machine (a home folder shared between
-// machines holds one pair per machine): a small lease, renewed at every poll,
-// and the shelf itself, written only when it changes. Neither holds what the
-// sessions said, only what the shelf's cards show.
-
-export type Disk = { tempDir: string; tempKb: number; logKb: number }
+// One session reads the shelf for the whole machine and shares it in a file under
+// ~/.claude/tamaclaudchi/; the others follow it while its lease holds (see DEVELOPING.md).
 
 type Lease = {
   schema: number
@@ -103,10 +175,6 @@ type Lease = {
 }
 
 export type Shelf = { sessions: TamaSession[]; disk: Disk | null }
-
-/** Bumped when the files change shape: a session running another version reads for itself. */
-const SCHEMA = 3
-const LEASE_POLLS = 3
 
 export const sharedPaths = (claudeDir: string, machine: string) => {
   const dir = `${claudeDir}/tamaclaudchi`
@@ -165,31 +233,13 @@ export async function share($: EngineInterface, paths: Paths, sessionsJson: stri
   if (isFirst) await $.process.run(['chmod', '700', paths.dir]).catch(() => undefined)
 }
 
-// ─── alerts ──────────────────────────────────────────────────────────────────
+// --- alerts
 
-// Announces a pet that has started to need you (a permission prompt), and,
-// when asked for, one that has finished its turn. Every session toasts the
-// news of the others; the session reading for the machine alone raises the
-// native notification, so it comes once, not once per session.
+// Toasts, and one desktop notification, when a pet starts to need you (or finishes).
 
 // Each running pet's mood at the last poll; null before the first, which
 // announces nothing (a pet already waiting when the session started is old news).
 let before: Map<string, Mood> | null = null
-
-/** What changed since the last poll, as lines to announce. */
-export function news(shelf: TamaSession[], prev: Map<string, Mood> | null): { needs: TamaSession[]; done: TamaSession[] } {
-  const out = { needs: [] as TamaSession[], done: [] as TamaSession[] }
-  if (!prev) return out
-  for (const s of shelf) {
-    if (!s.live) continue
-    const was = prev.get(s.id)
-    if (s.mood === 'needs' && was !== 'needs') out.needs.push(s)
-    else if (settings.alertOnDone && s.mood === 'waiting' && was === 'busy') out.done.push(s)
-  }
-  return out
-}
-
-const names = (list: TamaSession[]) => list.map(petName).join(', ')
 
 export async function announce($: EngineInterface, shelf: TamaSession[], me: string | null, isReader: boolean) {
   const prev = before
@@ -210,33 +260,13 @@ export async function announce($: EngineInterface, shelf: TamaSession[], me: str
   }
 }
 
-// ─── mailfx ──────────────────────────────────────────────────────────────────
+// --- mailfx
 
-// A message between two sessions, played on the shelf as it happens: its
-// sender throws a letter, its receiver catches one (pets.ts draws them). Each
-// pet plays its own end, so a message seen from both ends plays on both.
-
-const MAIL_FRAME_MS = 180
-/** A message older than this when first seen is old news: it plays nothing. */
-const FRESH_MS = 2 * 60_000
+// A new message between sessions, played on the shelf: a letter thrown, a letter caught.
 
 // Each pet's ends of messages as of the last poll; null before the first,
 // which plays nothing (what was sent before the shelf opened is old news).
 let seen: Set<string> | null = null
-
-/** The ends of messages new since the last poll: each its pet, and whether it sent or got the message. */
-export function newMail(shelf: TamaSession[], prev: Set<string> | null, now: number) {
-  const ends = new Set<string>()
-  const fresh: { s: TamaSession; role: 'send' | 'get' }[] = []
-  for (const s of shelf) {
-    for (const m of s.mail ?? []) {
-      const key = `${s.id}:${m.id}:${m.dir}`
-      ends.add(key)
-      if (prev && !prev.has(key) && s.live && m.ok && now - m.at < FRESH_MS) fresh.push({ s, role: m.dir === 'out' ? 'send' : 'get' })
-    }
-  }
-  return { ends, fresh }
-}
 
 /** Plays every message new since the last poll on its pets' cards. */
 export function playMail($: EngineInterface, shelf: TamaSession[], now: number) {
@@ -252,194 +282,22 @@ export function playMail($: EngineInterface, shelf: TamaSession[], now: number) 
   }
 }
 
-// ─── shelf ───────────────────────────────────────────────────────────────────
+// --- shelf
 
-// Reading the shelf off disk: every transcript under ~/.claude/projects, the
-// registry of running sessions under ~/.claude/sessions, and, for the opened
-// pet, its whole conversation, its subagents and its git. Nothing leaves this
-// machine.
+// Reads the transcripts, the live registry, git and conversations into the shelf.
 
-/** How many closed pets the graveyard holds (live ones always show); how far back it looks is a setting. */
-const MAX_CLOSED = 150
-/** How many of the newest transcripts are read besides the live ones, and per shell. */
-const CANDIDATES = 150
-const BATCH = 16
-/** A transcript read from its start is grepped whole: fewer of those per shell. */
-const FRESH_BATCH = 4
-/** A read on is backed up this far, so a line cut by the last read is read whole. */
-const OVERLAP_BYTES = 65_536
-/** A session that never got a reply (a scripted one-shot, a quit) leaves the shelf. */
-const EGG_SHOWN_MS = 15 * 60_000
-const TAIL_BYTES = 131_072
-/** How much of an opened pet's transcript is read for its conversation. */
-const CONVO_BYTES = 2 * 1024 * 1024
-/** A subagent counts as running while it has not finished and has written in this long. */
-const AGENT_RUNNING_MS = 10 * 60_000
-export const isAgentRunning = (a: Agent, now: number) => !a.isDone && now - a.mtimeMs < AGENT_RUNNING_MS
-/** A pet's page shows all its running subagents, and finished ones up to this many in all. */
-const AGENTS_SHOWN = 6
-/** How often disk use is measured again. */
-const DISK_MS = 60_000
-/** An unchanged shelf is drawn again this often all the same, so its ages move on. */
-const REDRAW_MS = 60_000
-/** How many checkouts a pet's git section shows, newest commit first. */
-const GIT_TREES = 4
-/** Claude's own temp dir (`/tmp/claude-<uid>`), the only place a clean may delete in. */
-export const TEMP_DIR = /^\/[^\x00-\x1f]*\/claude-\d+$/
-/** A project's folder name in it, as Claude Code writes them (`-home-me-src-repo`). */
-export const PROJECT_DIR = /^[\w.-]+$/
-/** A tmux pane as the registry names it, `session:@window.%pane`. */
-const TMUX_PANE = /^[^:\n]+:@\d+\.%\d+$/
-/** Session ids are uuids: any other file is not a transcript, and its name never reaches a command. */
-export const SESSION_ID = /^[\w-]+$/
-
-type Transcript = { path: string; id: string; mtimeMs: number; size: number; stamp: string }
-
-// Parsed transcripts by path, kept while the file's mtime and size hold, with
-// the facts read so far, the API calls found, and up to which byte. A module
-// variable on purpose: a reload just reads them again.
-const cache = new Map<string, {
-  stamp: string; size: number; facts: Record<string, string>; calls: Map<string, Call>; mail: Map<string, MailFact>; session: TamaSession
-}>()
-// The same for subagents' transcripts, whose API calls count to their pet.
-const subCache = new Map<string, { stamp: string; size: number; calls: Map<string, Call> }>()
-// A closed pet's subagents, listed once: they write no more.
-const closedSubs = new Map<string, Transcript[]>()
 // How many times API calls have been read, and each pet's spend as of then.
 let callsRead = 0
 let spent: { key: string; byId: Map<string, Spend> } = { key: '', byId: new Map() }
-
-// Every transcript, one line each: mtime in seconds, size, path. One process
-// rather than a listing per project folder, of which there are hundreds. GNU
-// find prints them itself; BSD find (macOS) has stat print them.
-const LIST_SCRIPT = `if find "$1" -maxdepth 0 -printf '' 2>/dev/null; then
-  find "$1" -mindepth 2 -maxdepth 2 -name '*.jsonl' -printf '%T@\\t%s\\t%p\\n'
-else
-  find "$1" -mindepth 2 -maxdepth 2 -name '*.jsonl' -exec stat -f '%m%t%z%t%N' {} +
-fi`
-
-// One shell per batch of changed transcripts, given as pairs: a path, and the
-// byte its facts were read up to (0 for a file not read yet, or rewritten).
-// For each: its path, then one `"key":"value"` line per fact found past that
-// byte (so none can shift another): when read from the start, what it was
-// born with, the first timestamp, folder and branch (a session may cd and
-// check out as it works; its looks stay those it was born with); the newest
-// custom title (a /rename, or an SDK run naming
-// itself); the newest ai-title (written early, out of reach of the tail); and
-// the last model (a tail full of one big tool result holds no reply, and would
-// hatch the pet back into an egg); a line per API call (spend.ts); each line
-// about a message to or from another session, and the time of the last prompt
-// you typed (mail.ts). Then the tail
-// itself. A busy transcript is so read only where it grew, not whole at every
-// poll.
-const READ_SCRIPT = `while [ $# -gt 1 ]; do
-  f="$1"; off="$2"; shift 2
-  printf '\\036%s\\n' "$f"
-  if [ "$off" -eq 0 ]; then
-    grep -m 1 -o '"timestamp":"[^"]*"' "$f"
-    grep -m 1 -o '"cwd":"[^"]*"' "$f"
-    grep -m 1 -o '"gitBranch":"[^"]*"' "$f"
-  fi
-  tail -c +$((off + 1)) "$f" | grep -o -E '"(customTitle|aiTitle)":"([^"\\\\]|\\\\.)*"|"model":"claude-[^"]*"' |
-    awk -F'"' '{ last[$2] = $0 } END { for (k in last) print last[k] }'
-  tail -c +$((off + 1)) "$f" | awk '${MAIL_AWK}
-${PROMPT_AWK}
-${USAGE_AWK}'
-  printf '\\037\\n'
-  tail -c ${TAIL_BYTES} "$f"
-  printf '\\n'
-done`
-
-// The API calls in subagents' transcripts, each read on from where it was.
-const USAGE_SCRIPT = `while [ $# -gt 1 ]; do
-  f="$1"; off="$2"; shift 2
-  printf '\\036%s\\n' "$f"
-  tail -c +$((off + 1)) "$f" | awk '${USAGE_AWK}'
-done`
-
-// Each live pet's subagents written to in the last ten minutes (so one cut
-// off mid-task is not counted forever), and whether each one has finished: a
-// last reply, or a background agent's hand-back to its pet.
-const SUBAGENT_SCRIPT = `for d in "$@"; do
-  printf '\\036%s\\n' "$d"
-  find "$d" -maxdepth 1 -name 'agent-*.jsonl' -mmin -10 2>/dev/null | while read -r f; do
-    tail -n 2 "$f" | grep -c -e '"stop_reason":"end_turn"' -e '"name":"SubagentHandback"'
-  done
-done`
-
-// The opened pet's subagents written to in the last half hour: for each, its
-// path, mtime, whether it has finished (as above), its model, and its
-// .meta.json (agent type and task description) on one line.
-const AGENTS_SCRIPT = `find "$1" -maxdepth 1 -name 'agent-*.jsonl' -mmin -30 2>/dev/null | while read -r f; do
-  printf '\\036%s\\n' "$f"
-  date -r "$f" +%s
-  tail -n 2 "$f" | grep -c -e '"stop_reason":"end_turn"' -e '"name":"SubagentHandback"'
-  printf '%s\\n' "$(tail -c 262144 "$f" | grep -o '"model":"claude-[^"]*"' | tail -n 1)"
-  head -c 4000 "\${f%.jsonl}.meta.json" 2>/dev/null
-  printf '\\n'
-done`
-
-// Every git checkout the opened pet has worked in: its own folder ($1), and
-// each folder its transcript ($2) and its last day's subagents ($3) name as a
-// cwd, or in a command they ran as a \`cd <dir>\` or a \`git -C <dir>\` (never
-// a path a tool merely printed), resolved to the checkout holding it. For
-// each: its path, newest commit time, \`status -sb\` (in its own checkout
-// alone, as status may run a repo's own filter commands; elsewhere only the
-// branch), then its last commits. Git runs read-only: no index lock taken, and
-// none of the commands a repo's own config could otherwise have it run (an
-// fsmonitor, or a signature checker named by gpg.program when log.showSignature
-// is on): a folder a session cd'd into may be any clone.
-const GIT_SCRIPT = `export GIT_OPTIONAL_LOCKS=0
-g() { git -c core.fsmonitor=false -c core.untrackedCache=false -c log.showSignature=false -c gpg.program=false "$@"; }
-home=$(g -C "$1" rev-parse --show-toplevel 2>/dev/null)
-{
-  printf '%s\\n' "$1"
-  { tail -c 4000000 "$2"; find "$3" -maxdepth 1 -name 'agent-*.jsonl' -mtime -1 -exec tail -c 1000000 {} \\; 2>/dev/null; } |
-    grep -o -E '"cwd":"[^"]*"|"command":"cd [^ "&;|]+|"command":"[^"]*git -C [^ "&;|]+' |
-    sed -E 's/^"cwd":"//; s/"$//; s/^"command":"cd //; s/^"command":".*git -C //'
-} | awk '!seen[$0]++' | tail -n 80 | while read -r d; do
-  case "$d" in "~"*) d="$HOME\${d#\\~}" ;; /*) ;; *) continue ;; esac
-  g -C "$d" rev-parse --show-toplevel 2>/dev/null
-done | awk '!seen[$0]++' | while read -r top; do
-  printf '\\036%s\\n' "$top"
-  g -C "$top" log -1 --format=%ct 2>/dev/null || echo 0
-  if [ "$top" = "$home" ]; then g -C "$top" status -sb 2>/dev/null
-  else printf '## %s\\n' "$(g -C "$top" rev-parse --abbrev-ref HEAD 2>/dev/null)"; fi
-  printf '\\037\\n'
-  g -C "$top" log -3 --pretty=format:'%h %s · %cr' 2>/dev/null
-  printf '\\n'
-done`
-
-// Disk use: Claude's temp dir and the transcripts' dir as wholes, then, for
-// each pet ("<project>/<session id>"), its folder in the temp dir, its
-// transcript and its folder of subagents. Two du runs, as one run counts a
-// file only once however many of its arguments hold it. The temp dir is
-// under $TMPDIR, or /tmp where it is not (macOS, whose $TMPDIR Claude Code
-// does not use).
-const DISK_SCRIPT = `p="$1"; shift
-b="\${CLAUDE_CODE_TMPDIR:-\${TMPDIR:-/tmp}}"
-t="\${b%/}/claude-$(id -u)"
-[ -d "$t" ] || t="/tmp/claude-$(id -u)"
-printf '%s\\n' "$t"
-du -sk "$t" "$p" 2>/dev/null
-printf '\\037\\n'
-for s in "$@"; do printf '%s\\n%s\\n%s\\n' "$t/$s" "$p/$s.jsonl" "$p/$s"; done | tr '\\n' '\\0' | xargs -0 -r du -sk 2>/dev/null
-true`
 
 export async function claudeDir($: EngineInterface): Promise<string> {
   return (await $.env.get('CLAUDE_CONFIG_DIR')) || `${await $.env.get('HOME')}/.claude`
 }
 
-/** A process where there is no /proc (macOS): its parent, and its start as `ps -o lstart` prints it in UTC. */
-type Proc = { ppid: number; start: string }
 // The process table, read once for a poll's checks; null where ps fails.
 let procs: Promise<Map<number, Proc> | null> | null = null
 /** The next check reads the process table again (a poll, a kill). */
 export const forgetProcesses = () => { procs = null }
-
-/** Where there is no /proc, the registry writes a process's start as ps does in UTC: `Thu Oct 22 22:10:12 2026`. */
-const LSTART = /^[A-Z][a-z]{2} [A-Z][a-z]{2} +\d{1,2} \d\d:\d\d:\d\d \d{4}$/
-const sameStart = (a: string, b: string) => a.replace(/\s+/g, ' ') === b.replace(/\s+/g, ' ')
 
 /** Every process by pid, from one ps run: one process a poll, rather than one per pid. */
 function processes($: EngineInterface): Promise<Map<number, Proc> | null> {
@@ -500,25 +358,6 @@ export async function parentOf($: EngineInterface, pid: number): Promise<number>
 // something only on its own.
 let machine: Promise<{ key: string; domain: string | null }> | null = null
 
-const MACHINE_SCRIPT = `cat /etc/machine-id 2>/dev/null; echo; readlink /proc/self/ns/pid 2>/dev/null
-ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | sed -n 's/.*"IOPlatformUUID" = "\\(.*\\)".*/\\1/p'`
-
-/**
- * This machine, from what MACHINE_SCRIPT prints: a key for the files the mod
- * shares on it, and its registry domain (null where unknown). A Mac's
- * registry entries all say `darwin`, so one Mac cannot tell another's apart,
- * only a Linux machine's.
- */
-export function machineFrom(stdout: string): { key: string; domain: string | null } {
-  const lines = stdout.split('\n').map(l => l.trim())
-  const id = lines.find(l => /^[0-9a-f]{8,}$/.test(l))
-  const ns = lines.find(l => /^pid:\[\d+\]$/.test(l))
-  const mac = lines.find(l => /^[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}$/i.test(l))
-  return id && ns ? { key: id.slice(0, 12), domain: `linux:${id}:${ns}` }
-    : mac ? { key: mac.replace(/-/g, '').slice(0, 12).toLowerCase(), domain: 'darwin' }
-    : { key: 'local', domain: null }
-}
-
 /** This machine, read once. */
 function machineOf($: EngineInterface) {
   if (!machine) machine = readMachine($)
@@ -529,11 +368,6 @@ async function readMachine($: EngineInterface): Promise<{ key: string; domain: s
   const r = await $.process.run(['sh', '-c', MACHINE_SCRIPT]).catch(() => null)
   return r ? machineFrom(r.stdout) : { key: 'local', domain: null }
 }
-
-// Registry entries by file name, as last read: one whose file has not changed
-// is not read again, and one whose process had ended stays ended (a crashed
-// session leaves its entry behind for good).
-const registry = new Map<string, { stamp: string; id: string | null; live: Live; hasEnded: boolean; updatedMs: number }>()
 
 /**
  * Running sessions by id, from Claude Code's own registry of live processes.
@@ -621,18 +455,6 @@ async function listTranscripts($: EngineInterface, root: string, now: number, li
   files.sort((a, b) => b.mtimeMs - a.mtimeMs)
   return files.filter((f, i) => i < CANDIDATES || live.has(f.id))
 }
-
-/** The read script's facts, one `"key":"value"` a line. */
-function factsOf(text: string): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const l of text.split('\n')) {
-    try { Object.assign(out, JSON.parse(`{${l}}`)) } catch {}
-  }
-  return out
-}
-
-/** The byte a grown file is read on from, backed up a little; a file that shrank was rewritten, and is read from the start. */
-const readFrom = (c: { size: number } | undefined, f: Transcript) => (c && f.size >= c.size ? Math.max(0, c.size - OVERLAP_BYTES) : 0)
 
 /** Parses a batch of changed transcripts into the cache, each read on from where it was. */
 async function readBatch($: EngineInterface, batch: Transcript[], now: number) {
@@ -880,8 +702,6 @@ async function readSubagentCalls($: EngineInterface, shelf: TamaSession[]): Prom
   return out
 }
 
-const SLOTS_KEY = 'looks-v1'
-
 /**
  * Each repo's colour and each branch's item, kept once given: in the store, so
  * every session on this machine draws a pet alike, and a newcomer takes a free
@@ -900,7 +720,6 @@ async function stickyLooks($: EngineInterface, shelf: TamaSession[], now: number
 let diskAt = 0
 /** Has the next poll measure disk again (after a clean). */
 export const measureDiskSoon = () => { diskAt = 0 }
-const diskById = new Map<string, { tempKb: number; logKb: number }>()
 let diskWhole: Disk | null = null
 
 /** Measures what Claude keeps on disk, as a whole and pet by pet. */
@@ -951,8 +770,6 @@ export async function readConvo($: EngineInterface, s: TamaSession) {
   // another pet may have been opened while this one was read
   if ((await read($, selected)) === s.id) await update($, convo, () => ({ id: s.id, mtimeMs: s.mtimeMs, said }))
 }
-
-const dirOf = (s: TamaSession) => s.path.slice(0, -'.jsonl'.length)
 
 /** The opened pet's git: every checkout it has worked in, the newest commit first. */
 export async function readGit($: EngineInterface, s: TamaSession) {
@@ -1009,13 +826,6 @@ export async function readAgents($: EngineInterface, s: TamaSession) {
   if (opened && (await read($, trace))?.mtimeMs !== opened.mtimeMs) await readTrace($, opened)
 }
 
-// The lines about messages in each transcript given, from its last few MB.
-const MAIL_SCRIPT = `for f in "$@"; do tail -c ${4 * CONVO_BYTES} "$f" | awk '${MAIL_AWK}'; done`
-/** How many transcripts the messages page reads the texts from. */
-const MAIL_FILES = 30
-/** How much of a message a page shows. */
-const MAIL_CHARS = 20_000
-
 /**
  * The text of these pets' messages, read from their own transcripts when a
  * page shows them (the shelf, shared between sessions, never holds it); read
@@ -1043,21 +853,11 @@ export async function readTrace($: EngineInterface, a: Agent) {
   await update($, trace, () => ({ id: a.id, mtimeMs: a.mtimeMs, steps: traceOf(out.stdout) }))
 }
 
-// ─── actions ─────────────────────────────────────────────────────────────────
+// --- actions
 
-// What the buttons do: open a pet, play its hover loop, and drive tmux to
-// jump to, resurrect, hatch or kill a session.
-
-/** How many of a pet's newest messages its page draws at first, and adds on each ask. */
-export const CONVO_PAGE = 30
+// The buttons: tmux, messages, rename, kill, clean and resurrect.
 
 export const WING = 'ʚɞ' // resurrect: a pair of little wings
-const TMUX_TARGET = '#{session_name}:#{window_id}.#{pane_id}'
-
-/** The session part of a tmux target, `session:@window.%pane`. */
-export const tmuxSession = (target: string) => target.split(':')[0]!
-/** The pane part, `%12`: which a renamed session keeps (a restarted tmux server counts again from %0). */
-const tmuxPane = (target: string) => target.split('.').pop()!
 /**
  * Runs a command; one that cannot start at all (no tmux installed) reads as
  * a failed run, so every caller's fallback still happens.
@@ -1080,8 +880,6 @@ async function paneRuns($: EngineInterface, pane: string, pid: number): Promise<
   }
   return false
 }
-
-const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
 
 /** Opens a pet's page (null: back to the shelf), reading its git, conversation and subagents. */
 export async function select($: EngineInterface, id: string | null) {
@@ -1279,11 +1077,6 @@ export async function killPet($: EngineInterface, s: TamaSession) {
   void refresh($)
 }
 
-/** A closed pet that wrote this lately is left alone by a clean. */
-const RECENT_WRITE_MS = 30 * 60_000
-/** A closed pet's temp folder smaller than this (KiB) is not worth a clean. */
-export const MIN_CLEAN_KB = 64
-
 /**
  * Frees a closed pet's folder in Claude's temp dir: its scratch files and its
  * background tasks' output. Its transcript stays, so it can still be
@@ -1349,11 +1142,6 @@ export async function copyPath($: EngineInterface, path: string) {
   $.ui.toast('Path copied.')
 }
 
-/** What leads a message asking a pet to rename itself: its own copy of the mod takes it, its model never reads it. */
-export const RENAME_TAG = '[tamaclaudchi rename] '
-/** A name as `/rename` takes it: one line, not too long. */
-export const cleanName = (text: string) => text.replace(/\s+/g, ' ').trim().slice(0, 100)
-
 /**
  * Renames a pet as `/rename` would. This session runs it itself; another
  * running one is asked to, its own copy of the mod running it there; a closed
@@ -1402,30 +1190,12 @@ export async function message($: EngineInterface, s: TamaSession, text: string) 
   $.ui.toast(sent.isDelivered ? `Sent to ${nameOf(s)}.` : `Not sent: ${sent.reason}`)
 }
 
-// ─── footer ──────────────────────────────────────────────────────────────────
+// --- footer
 
-// The footer: at the right of the prompt's footer line, every running pet as
-// a little face in its pet's colour. Working ones wave, one that needs you
-// blinks a red mark, and the idle ones doze as one face with a count; the
-// pointer on an awake face shows whose it is.
+// The footer right of the prompt: every running pet as a little face.
 
 // The values this module reads. The engine's scan wants them declared in each
 // module that uses them; one plugin and key is one value.
-
-/** How long each frame of the faces holds. */
-export const FOOTER_FRAME_MS = 700
-/** The slot an awake face's name shows in, left of the faces, in cells. */
-const NAME_W = 24
-/** Awake faces drawn at most; more say `+N`. */
-const AWAKE_SHOWN = 6
-const RED = '#ff5555'
-
-// Each pair is two frames of one width, so the line never jitters.
-const WAVE = ['ᕕ(•ᴗ•)ᕗ', 'ᕙ(•ᴗ•)ᕗ']
-const ASKING = '(°ᴗ°)'
-const DOZE = ['(-ᴗ-)ᶻ ', '(-ᴗ-)zᶻ']
-
-type Next = (e: RenderInput<'SessionMode'>) => Promise<RenderElement>
 
 export async function renderFooter($: EngineInterface, e: RenderInput<'SessionMode'>, next: Next) {
   const all = await read($, sessions)
@@ -1468,72 +1238,16 @@ export async function renderFooter($: EngineInterface, e: RenderInput<'SessionMo
   )
 }
 
-// ─── view ────────────────────────────────────────────────────────────────────
+// --- view
 
-// Drawing the pane: the shelf of running pets, the graveyard, one pet's page,
-// and the trace of one of its subagents.
+// The pane: the shelf, the graveyard, the spend and messages pages, and a pet's page.
 
-type PaneEvent = RenderInput<'Pane'>
-
-/** How many graves the graveyard draws at once; a search narrows the rest. */
-const GRAVES_SHOWN = 40
-const CARD_W = 24
-/** The card's jump button, `🏠 jump to pane`, in cells. */
-const JUMP_W = 15
-/** A subagent's card on its pet's page: the half-size pet, its task, its state. */
-const AGENT_W = 18
-/** A card shows its pet's disk use from this much (KiB); its page always does. */
-const CARD_DISK_KB = 100 * 1024
-/** How many steps of a subagent's trace are drawn, the newest. */
-const STEPS_SHOWN = 200
-/** Cards opened by a digit key, the first so many on the page. */
-const DIGITS = 9
-/** The spend page's top pets and repos. */
-const SPEND_TOP = 8
-/** A card's height on the terminal: a row of buttons, the pet, six rows of text, the border. */
-const CARD_H = 1 + 8 + 6 + 2
-/** The hovered card's double outline, as strips over its border cells: [top, left, text]. */
-const OUTLINE: [number, number, string][] = [
-  [0, 0, '╔' + '═'.repeat(CARD_W - 2) + '╗'],
-  [CARD_H - 1, 0, '╚' + '═'.repeat(CARD_W - 2) + '╝'],
-  [1, 0, Array(CARD_H - 2).fill('║').join('\n')],
-  [1, CARD_W - 1, Array(CARD_H - 2).fill('║').join('\n')],
-]
-
-// Each mood's colours: its pill, and the card border.
-const MOOD: Record<Mood, { label: string; fg: string; bg: string; border: string | null }> = {
-  needs: { label: '▲ needs you?', fg: '#8e1140', bg: '#ffdce6', border: '#ff6188' },
-  busy: { label: '● working', fg: '#3b3340', bg: '#fdfbf2', border: '#fc9867' },
-  waiting: { label: '◌ waiting for you', fg: '#6e5200', bg: '#ffedc0', border: '#ffd866' },
-  idle: { label: '○ idle', fg: '#8b8394', bg: '#fdfbf2', border: null },
-}
-// The shelf's rows, in order; a pet waiting on you after its turn counts as idle.
-const GROUPS: { moods: Mood[]; label: string; color: string }[] = [
-  { moods: ['busy'], label: 'Working', color: '#fc9867' },
-  { moods: ['needs'], label: 'Needs approval', color: '#ff6188' },
-  { moods: ['waiting', 'idle'], label: 'Idle', color: '#ffd866' },
-]
-const ACCENT = '#e8825a'
-const GREY = '#8b8394'
-/** Your own card: a cool cyan, apart from every mood's warm border. */
-const ME = '#78dce8'
-/** A section's header on a pet's or a subagent's page. */
-const HEADER = '#78dce8'
-/** The hovered card and every card of its repo. Borders get only the 16
- * terminal colours: a paler mint rounds to white, a bluer one to cyan, and
- * this one lands on bright green. */
-const HOVER = '#55ff55'
 // Every glyph is one cell wide, since one drawn wider than the layout thinks
 // leaves copies behind on redraw; but for these, emoji since Unicode 6 with
 // emoji presentation, which every terminal agrees are two cells (unlike 🪽,
 // too new, or ⚠ and ⏸, text by default).
 const HOME = '🏠' // jump to its tmux pane
-const PHONE = '📱' // on Remote Control
-const GRAVE = '🪦' // the graveyard
 const LETTER = '💌' // a message between sessions (✉ is text by default)
-/** How many messages the messages page and a pet's page draw, the newest. */
-const POSTS_SHOWN = 40
-
 type View = { list: TamaSession[]; mine: string | null; looks: Map<string, Outfit>; now: number; cols: number; seen: Record<string, number> }
 
 export async function renderPane($: EngineInterface, e: PaneEvent) {
@@ -1587,26 +1301,6 @@ function kit($: EngineInterface, e: PaneEvent, v: View) {
     <Box marginTop={1}><Text>{title(text)}{aside ? note(aside) : null}</Text></Box>
   return { pet, agentPet, modelPill, ctx, title, note, header, brand: <Text bold color={ACCENT}>✿ TamaClaudchi</Text> }
 }
-
-/**
- * A regexp that could take ages on a long folder name: a repeated group that
- * repeats inside (`(a+)+`), or a back-reference. Matched as plain text instead,
- * as the search runs at every redraw.
- */
-const SLOW_REGEXP = /\((?:[^()\\]|\\.)*[+*}](?:[^()\\]|\\.)*\)[+*{]|\\[1-9]/
-
-/** The closed pets matching a search: a regexp, or plain text while it does not parse (or might be slow). */
-export function searchGraves(closed: TamaSession[], query: string): { found: TamaSession[]; isRegexp: boolean } {
-  let re: RegExp | null = null
-  try { if (!SLOW_REGEXP.test(query)) re = new RegExp(query, 'i') } catch {}
-  const q = query.toLowerCase()
-  const found = closed.filter(s =>
-    [s.title ?? '', s.repo, s.branch ?? '', s.cwd].some(field => (re ? re.test(field) : field.toLowerCase().includes(q))))
-  return { found, isRegexp: re !== null }
-}
-
-/** What a pet spent over the window, by its days. */
-const windowSpend = (s: TamaSession) => Object.values(s.spend?.days ?? {}).reduce((a, b) => a + b, 0)
 
 /** The shelf: running pets in their rows, the graveyard, or the spend page in their place. */
 async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
@@ -1715,9 +1409,6 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
     </Box>
   )
 }
-
-/** What `armed` holds while the graveyard's clean-all waits for its second press. */
-const CLEAN_ALL = '*graves'
 
 /** One pet's card on the shelf; `digit` opens it from the keyboard. */
 function card($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?: number) {
@@ -1856,13 +1547,6 @@ function endName(v: View, end: End) {
 }
 const endColor = (v: View, end: End) => (end.id ? v.looks.get(end.id)?.skin.body : undefined) ?? GREY
 
-/** A tab's label, in cells at most. */
-const TAB_W = 34
-
-/** A tab, filled: the open one the headers' cyan with dark text, the others dark grey with light text. */
-const TAB_OPEN = { fg: '#1e1b24', bg: HEADER }
-const TAB_SHUT = { fg: '#d8d4de', bg: '#4a4458' }
-
 /**
  * The conversations' tabs, standing on a rule of the open one's colour, as a
  * tab strip: each a filled block, the first nine opened with a digit. There
@@ -1890,8 +1574,6 @@ function mailTabs($: EngineInterface, e: PaneEvent, v: View, threads: Thread[], 
   )
 }
 
-/** The texts a page has, and whether they are all there is: read for this page's messages, not another's. */
-type Told = { texts: Record<string, string>; isRead: boolean }
 async function told($: EngineInterface, pets: TamaSession[]): Promise<Told> {
   const got = await read($, mailText)
   return { texts: got?.byId ?? {}, isRead: !!got && got.key === mailRead(pets).key }
@@ -1928,9 +1610,6 @@ function threadView($: EngineInterface, e: PaneEvent, v: View, t: Thread, left: 
     </Box>
   )
 }
-
-/** The conversation whose tab is open: the one asked for, or the latest. */
-const openThread = (threads: Thread[], tab: string | null) => threads.find(t => t.key === tab) ?? threads[0]
 
 /** Every conversation between the sessions over the graveyard's window, a tab each, the latest first. */
 async function mailroomPage($: EngineInterface, e: PaneEvent, v: View) {
@@ -2214,105 +1893,4 @@ async function agentPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSessi
       })}
     </Box>
   )
-}
-
-// ─── register ────────────────────────────────────────────────────────────────
-
-const TITLE = 'TamaClaudchi'
-/** The header says which copy of the mod a pane runs: keep in step with .claude-plugin/plugin.json. */
-const VERSION = '0.1.0'
-/** With the pane closed and no alerts to raise, only the footer shows the pets: read them this many polls apart. */
-const CLOSED_POLLS = 4
-/** With every face dozing, the footer moves one frame in this many. */
-const DOZE_FRAMES = 3
-
-/** How often this session polls: every poll while its pane is open or alerts are on, else a few polls apart. */
-const everyMs = (isPaneOpen: boolean) => (!isPaneOpen && settings.alerts === 'off' ? settings.pollMs * CLOSED_POLLS : settings.pollMs)
-
-async function open($: EngineInterface, focus: boolean) {
-  await update($, isOpen, () => true)
-  await refresh($)
-  return $.ui.open(focus ? { id: PANE, title: TITLE, focus: true } : { id: PANE, title: TITLE })
-}
-
-export const register: Register = (on, options) => {
-  applyOptions(options)
-
-  on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'tama', description: 'Open the TamaClaudchi shelf: every session, across folders, as a pet' })
-    await update($, me, () => null)
-    // The host keeps these across a reload of the mod, when an older version
-    // may have written them in another shape: start again from the shelf.
-    await update($, selected, () => null)
-    await update($, agentPick, () => null)
-    await update($, git, () => null)
-    await update($, convo, () => null)
-    await update($, agents, () => null)
-    await update($, trace, () => null)
-    await update($, showGit, () => false)
-    await update($, showConvo, () => false)
-    await update($, armed, () => null)
-    await update($, isSpawning, () => false)
-    await update($, renaming, () => null)
-    await update($, showClosed, () => false)
-    await update($, showSpend, () => false)
-    await update($, showMail, () => false)
-    await update($, showMailroom, () => false)
-    await update($, mailTab, () => null)
-    await update($, mailSeen, () => ({}))
-    await update($, mailText, () => null)
-    await update($, graveQuery, () => '')
-    await update($, disk, () => null)
-    await update($, sessions, () => [])
-    void $.session.id().then(id => update($, me, () => id))
-    await update($, version, () => VERSION)
-    // Unasked, a pane seats from 144 columns and waits below that, so on a
-    // wide terminal your pet greets you at start, as the logo would.
-    if (settings.autoOpen) void open($, false)
-    else void refresh($, { everyMs: everyMs(false) })
-    // Alerts need the moods at every poll; the footer alone can wait longer.
-    // Only one session on the machine reads the transcripts (the shared section).
-    let polls = 0
-    $.clock.every(settings.pollMs, () => void read($, isOpen).then(o => {
-      const ms = everyMs(o)
-      if (ms === settings.pollMs || ++polls % CLOSED_POLLS === 0) return refresh($, { everyMs: ms })
-    }))
-    // the footer's faces move: its next frame, while there are any (the footer
-    // alone reads the frame, so nothing else is drawn again); dozing faces
-    // alone snore slower, so an idle machine redraws less
-    let frames = 0
-    $.clock.every(FOOTER_FRAME_MS, () => void read($, sessions).then(list => {
-      const live = list.filter(s => s.live)
-      if (!live.length) return
-      if (live.some(s => s.mood === 'busy' || s.mood === 'needs') || ++frames % DOZE_FRAMES === 0) return update($, footerFrame, n => n + 1)
-    }))
-    return next(e)
-  })
-
-  on('command.run', { command: 'tama' }, async ($, e) => {
-    await open($, true)
-    // the main screen (tmux's default) seats the pane above the prompt, not docked on the right
-    if (!e.presentation.isFullscreen) $.ui.toast('Shown above the prompt: run /tui fullscreen (or set "tui": "fullscreen" in settings) to dock it on the right.', { timeoutMs: 8000 })
-    return { text: 'TamaClaudchi shelf opened.' }
-  })
-
-  // another session's shelf asks this one's pet to rename itself (the actions section)
-  on('session.receive', async ($, e, next) => {
-    const at = e.text.indexOf(RENAME_TAG)
-    if (e.origin.kind !== 'peer' || e.origin.plugin !== 'tamaclaudchi' || at < 0) return next(e)
-    const name = cleanName(e.text.slice(at + RENAME_TAG.length).split('\n')[0]!)
-    // queued for when the session is idle: not awaited, as this delivery waits on the hook
-    if (name) void $.command.run({ command: 'rename', args: name }).catch(err => $.ui.log(`tamaclaudchi: could not rename: ${String(err)}`))
-    return { consumed: 'a rename asked from another session\'s shelf' }
-  })
-
-  on('ui.close', { id: PANE }, async ($, e, next) => {
-    await update($, isOpen, () => false)
-    return next(e)
-  })
-
-  on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => renderPane($, e))
-
-  // the footer, right of the prompt: every running pet as a little face
-  on('ui.render', { component: 'SessionMode' }, ($, e, next) => renderFooter($, e, next))
 }

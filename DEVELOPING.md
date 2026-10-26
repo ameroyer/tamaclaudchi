@@ -91,6 +91,7 @@ in `hooks/register.tsx`, in sections; the other modules are plain helpers.
 | file | role |
 |---|---|
 | `hooks/register.tsx` | everything that touches Claude Code, in sections: `players` (a pet's animations), `shared` (the lease: one session reads, the others follow), `alerts` (the toasts and the notification), `mailfx` (a message's letter animation), `shelf` (reads transcripts, the live registry, git and conversations), `actions` (the buttons: tmux, messages, kill and resurrect), `footer` (the little faces right of the prompt), `view` (the shelf, the graveyard and a pet's page), and `register` (the hooks: `/tama`, the pane, the poll) |
+| `hooks/plain.tsx` | (this branch only) the declarations of those sections that never touch `$`: the shell scripts the shelf runs, layout constants, and plain functions over what the scripts print. Moved out so `register.tsx` stays under 100,000 characters, with `register` near its top, for the directory's reader |
 | `hooks/config.ts` | the settings, from `/config` |
 | `hooks/spend.ts` | each API call's usage, counted once, and a pet's spend |
 | `hooks/sessions.ts` | parses a transcript into a pet's mood, model and words |
