@@ -403,3 +403,24 @@ export const DOZE_FRAMES = 3
 
 /** How often this session polls: every poll while its pane is open or alerts are on, else a few polls apart. */
 export const everyMs = (isPaneOpen: boolean) => (!isPaneOpen && settings.alerts === 'off' ? settings.pollMs * CLOSED_POLLS : settings.pollMs)
+
+// Text with a dollar sign in it, kept out of register.tsx: the directory reads
+// every $ in a file that declares a hook as the engine interface.
+/** One `ps -o pid=,ppid=,lstart=` row. */
+export const PS_LINE = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/
+/** A subagent's transcript file name. */
+export const AGENT_FILE = /^agent-[\w-]+\.jsonl$/
+/** The subagent id in a transcript path. */
+export const AGENT_ID = /agent-([\w-]+)\.jsonl$/
+/** An absolute path with no control characters. */
+export const ABS_PATH = /^\/[^\x00-\x1f]*$/
+/** A leading `~`, alone or before a slash. */
+export const HOME_TILDE = /^~(?=\/|$)/
+/** A name of dots only (`.`, `..`). */
+export const DOTS_ONLY = /^\.+$/
+/** tmux session ids start with it (`$3`). */
+export const TMUX_SESSION_SIGIL = '$'
+/** Appends its first argument as a line to the file its second names. */
+export const APPEND_LINE_SCRIPT = 'printf \'%s\\n\' "$1" >> "$2"'
+/** The spend page's sign on its button. */
+export const SPEND_SIGN = '$'
