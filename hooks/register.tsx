@@ -108,7 +108,7 @@ export type Shelf = { sessions: TamaSession[]; disk: Disk | null }
  * Bumped when the files change shape. The files are named for it, so sessions
  * running another version share files of their own rather than fight over these.
  */
-const SCHEMA = 5
+const SCHEMA = 6
 const LEASE_POLLS = 3
 
 export const sharedPaths = (claudeDir: string, machine: string) => {
@@ -365,6 +365,7 @@ done`
 // last reply, or a background agent's hand-back to its pet.
 const SUBAGENT_SCRIPT = `for d in "$@"; do
   printf '\\036%s\\n' "$d"
+  printf 'T %s\\n' "$(find "$d" -maxdepth 1 -name 'agent-*.jsonl' 2>/dev/null | wc -l)"
   find "$d" -maxdepth 1 -name 'agent-*.jsonl' -mmin -10 2>/dev/null | while read -r f; do
     tail -n 2 "$f" | grep -c -e '"stop_reason":"end_turn"' -e '"name":"SubagentHandback"'
   done
@@ -821,7 +822,8 @@ async function readShelf($: EngineInterface, dir: string, now: number): Promise<
   if (now - diskAt > DISK_MS) await readDisk($, root, shelf, now)
   const slots = await stickyLooks($, shelf, now)
   for (const s of shelf) {
-    s.subagents = working.get(s.id) ?? 0
+    s.subagents = working.get(s.id)?.working ?? 0
+    s.subagentsEver = working.get(s.id)?.ever ?? 0
     s.disk = diskById.get(s.id) ?? null
     s.skinSlot = slots.repo[repoKey(s)]?.[0] ?? null
     s.itemSlot = slots.item[itemKey(s)]?.[0] ?? null
@@ -948,16 +950,16 @@ async function readDisk($: EngineInterface, root: string, shelf: TamaSession[], 
   diskWhole = { tempDir, tempKb: kb.get(tempDir) ?? 0, logKb: kb.get(root) ?? 0 }
 }
 
-/** How many subagents each pet has still at work, by session id. */
-async function readSubagents($: EngineInterface, pets: TamaSession[]): Promise<Map<string, number>> {
-  const out = new Map<string, number>()
+/** How many subagents each pet has still at work, and has launched in all, by session id. */
+async function readSubagents($: EngineInterface, pets: TamaSession[]): Promise<Map<string, { working: number; ever: number }>> {
+  const out = new Map<string, { working: number; ever: number }>()
   const byDir = new Map(pets.filter(s => s.path).map(s => [`${dirOf(s)}/subagents`, s.id]))
   if (!byDir.size) return out
   const res = await $.process.run(['sh', '-c', SUBAGENT_SCRIPT, 'sh', ...byDir.keys()]).catch(() => null)
   for (const chunk of res?.stdout.split('\x1e').slice(1) ?? []) {
-    const [dir = '', ...finished] = chunk.split('\n')
+    const [dir = '', total = '', ...finished] = chunk.split('\n')
     const id = byDir.get(dir)
-    if (id) out.set(id, finished.filter(c => c.trim() === '0').length)
+    if (id) out.set(id, { working: finished.filter(c => c.trim() === '0').length, ever: Number(total.replace(/^T\s*/, '')) || 0 })
   }
   return out
 }
@@ -1292,7 +1294,7 @@ async function jumpTo($: EngineInterface, target: string, name: string) {
   }
   await run($, ['tmux', 'select-window', '-t', pane])
   await run($, ['tmux', 'select-pane', '-t', pane])
-  $.ui.toast(`Jumped to ${name}`)
+  $.ui.toast(`Attached to ${name}`)
 }
 
 /**
@@ -1667,15 +1669,13 @@ type PaneEvent = RenderInput<'Pane'>
 /** How many graves the graveyard draws at once; a search narrows the rest. */
 const GRAVES_SHOWN = 40
 const CARD_W = 24
-/** The card's jump button, `🏠 jump to pane`, in cells. */
-const JUMP_W = 15
 /** A subagent's card on its pet's page: the half-size pet, its task, its state. */
 const AGENT_W = 18
 /** A card shows its pet's disk use from this much (KiB); its page always does. */
 const CARD_DISK_KB = 100 * 1024
 /** How many steps of a subagent's trace are drawn, the newest. */
 const STEPS_SHOWN = 200
-/** Cards opened by a digit key, the first so many on the page. */
+/** Cards and conversation tabs opened by a digit key, the first so many. */
 const DIGITS = 9
 /** The spend page's top pets and repos. */
 const SPEND_TOP = 8
@@ -1716,9 +1716,11 @@ const HOVER = '#55ff55'
 // leaves copies behind on redraw; but for these, emoji since Unicode 6 with
 // emoji presentation, which every terminal agrees are two cells (unlike 🪽,
 // too new, or ⚠ and ⏸, text by default).
-const HOME = '🏠' // jump to its tmux pane
+const HOME = '🏠' // attach: its tmux pane, or its background session
 const PHONE = '📱' // on Remote Control
 const GRAVE = '🪦' // the graveyard
+/** The background pill's fill, on a pet's page. */
+const PILL_BG = '#d9d6dc'
 const LETTER = '💌' // a message between sessions (✉ is text by default)
 /** How many messages the messages page and a pet's page draw, the newest. */
 const POSTS_SHOWN = 40
@@ -1782,7 +1784,7 @@ function kit($: EngineInterface, e: PaneEvent, v: View) {
   const note = (text: string) => <Text dimColor> · {text}</Text>
   const header = (text: string, aside?: string) =>
     <Box marginTop={1}><Text>{title(text)}{aside ? note(aside) : null}</Text></Box>
-  return { pet, agentPet, modelPill, ctx, title, note, header, brand: <Text bold color={ACCENT}>✿ TamaClaudchi</Text> }
+  return { pet, agentPet, modelPill, ctx, title, note, header, brand: <Text bold color={ACCENT}>✿ TamaClaudchi ✿</Text> }
 }
 
 /**
@@ -1822,8 +1824,7 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
   const self = v.list.find(s => s.id === v.mine)
   const alive = v.list.filter(s => s.live || s.id === v.mine)
   const closed = v.list.filter(s => !s.live && s.id !== v.mine)
-  const others = alive.filter(s => s.id !== v.mine)
-  const folders = new Set(others.map(s => s.repo)).size
+  const folders = new Set(alive.map(s => s.repo)).size
   const { found, isRegexp } = searchGraves(closed, query)
   const graveKb = closed.reduce((n, s) => n + (s.disk?.tempKb ?? 0), 0)
   const toClean = cleanable(closed)
@@ -1848,8 +1849,9 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
 
   return (
     <Box flexDirection="column">
+      {/* the header, top down: title, how to open a pet, disk, the count, the keys, the legend */}
       {k.brand}
-      <Text dimColor>click a pet, or press its number, to open it · body = repo · hat = model · item = branch{mod ? ` · v${mod}` : ''}</Text>
+      <Text dimColor>Click a pet, or press its number, to open it</Text>
       {/* what Claude keeps on disk, orange then red past the thresholds in /config: time to clean up */}
       {used ? (
         <Text wrap="truncate">
@@ -1858,30 +1860,25 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
           <Text dimColor> on disk: {bytes(used.tempKb)} in {used.tempDir}, {bytes(used.logKb)} of transcripts</Text>
         </Text>
       ) : null}
-      {isGraveOpen ? null : (
-        <Box flexDirection="column">
-          {self ? null : <Text dimColor>Your pet hatches once this session has written its first reply.</Text>}
-          {spawning && Input ? (
-            <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
-              <Text bold color={ACCENT}>+ a new pet, in its own tmux session</Text>
-              <Input key="spawn-dir" label="folder" value={self?.cwd ?? '~'} autoFocus submitLabel="hatch" onSubmit={dir => void spawnPet($, dir)} />
-              <Button key="spawn-cancel" plain dimColor label="cancel" onPress={() => void update($, isSpawning, () => false)} />
-            </Box>
-          ) : (
-            <Box columnGap={2} flexWrap="wrap">
-              <Button key="spawn" hotkey="n" plain label="+ new pet" onPress={() => void update($, isSpawning, () => true)} />
-              <Button key="spend" hotkey="s" plain label={`$ spend · ${usd(spentToday)} today`} onPress={() => void update($, showSpend, () => true)} />
-              {posts ? <Button key="mailroom" hotkey="m" plain label={`${LETTER} ${plural(posts, 'message')}`} onPress={() => void openMailroom($, true)} /> : null}
-            </Box>
-          )}
-          <Text dimColor>{plural(others.length, 'other running pet')} across {plural(folders, 'folder')}</Text>
-        </Box>
-      )}
+      <Text dimColor>{plural(alive.length, 'running pet')} across {plural(folders, 'folder')}</Text>
       {isGraveOpen
         ? <Button key="graveyard" hotkey="g" plain label="← back to the shelf" onPress={openGraves(false)} />
-        : closed.length
-          ? <Button key="graveyard" hotkey="g" plain dimColor label={`${GRAVE} graveyard · ${closed.length} closed ${since()}`} onPress={openGraves(true)} />
-          : null}
+        : spawning && Input ? (
+          <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
+            <Text bold color={ACCENT}>+ a new pet, in its own tmux session</Text>
+            <Input key="spawn-dir" label="folder" value={self?.cwd ?? '~'} autoFocus submitLabel="hatch" onSubmit={dir => void spawnPet($, dir)} />
+            <Button key="spawn-cancel" plain dimColor label="cancel" onPress={() => void update($, isSpawning, () => false)} />
+          </Box>
+        ) : (
+          <Box columnGap={2} flexWrap="wrap">
+            <Button key="spawn" hotkey="n" plain label="+ new pet" onPress={() => void update($, isSpawning, () => true)} />
+            {closed.length ? <Button key="graveyard" hotkey="g" plain label={`${GRAVE} graveyard · ${closed.length} closed`} onPress={openGraves(true)} /> : null}
+            <Button key="spend" hotkey="s" plain label={`$ spend · ${usd(spentToday)} today`} onPress={() => void update($, showSpend, () => true)} />
+            {posts ? <Button key="mailroom" hotkey="m" plain label={`${LETTER} ${plural(posts, 'message')}`} onPress={() => void openMailroom($, true)} /> : null}
+          </Box>
+        )}
+      <Text>{mod ? <Text color={HEADER}>v{mod} </Text> : null}<Text dimColor>Legend: body = repo · hat = model · item = branch</Text></Text>
+      {isGraveOpen || self ? null : <Text dimColor>Your pet hatches once this session has written its first reply.</Text>}
       {isGraveOpen && !closed.length ? <Text dimColor>No pet has closed {since()}.</Text> : null}
       {isGraveOpen && closed.length && Input ? (
         <Box flexDirection="column" marginTop={1}>
@@ -1926,10 +1923,6 @@ function card($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?:
   const size = s.disk ? s.disk.tempKb + s.disk.logKb : 0
   const sad = isSad(s, v.now, settings.sadMs)
   const isMailed = hasRecentMail(s, v.now, v.seen[s.id])
-  // the jump button's whole label, a space, and the corner's marks (size,
-  // phone, letter: a gap between each) must fit in the card
-  const marks = [size >= CARD_DISK_KB ? bytesShort(size).length : 0, s.live?.isRemote ? 2 : 0, isMailed ? 2 : 0].filter(Boolean)
-  const crowded = JUMP_W + 1 + marks.reduce((a, b) => a + b, 0) + Math.max(0, marks.length - 1) > CARD_W - 2
   return (
     // The card lights with every card of its repo while any is hovered; the
     // hovered one alone also gets the double outline, drawn over its border by
@@ -1943,7 +1936,7 @@ function card($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?:
         <Box width={CARD_W - 2} justifyContent="space-between">
           {isMe ? <Text bold color={ME}>★ you</Text>
             : !s.live ? <Button key={`wing-${s.id}`} plain label={`${WING} resurrect`} onPress={() => void resurrect($, s)} />
-            : canJump(s.live) ? <Button key={`home-${s.id}`} plain label={crowded ? `${HOME} jump` : s.live.tmux ? `${HOME} jump to pane` : `${HOME} attach`} onPress={() => void jump($, s)} />
+            : canJump(s.live) ? <Button key={`home-${s.id}`} plain label={`${HOME} attach`} onPress={() => void jump($, s)} />
             : s.live.isElsewhere ? <Text dimColor>↗ another machine</Text>
             : <Text> </Text>}
           <Box gap={1}>
@@ -1958,15 +1951,19 @@ function card($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?:
         </Box>
         {k.pet(s, `pet-${s.id}`)}
         {/* its name opens it: by Tab and Enter, its digit, or a click (the pet takes one too, on the terminal) */}
-        <Button key={`name-${s.id}`} plain hotkey={digit ? String(digit) : undefined} onPress={() => void select($, s.id)}>
-          <Text bold wrap="truncate" dimColor={!s.live} color={isMe ? ME : undefined}>{petName(s)}</Text>
-        </Button>
+        <Box width={CARD_W - 2} justifyContent="center">
+          <Button key={`name-${s.id}`} plain hotkey={digit ? String(digit) : undefined} onPress={() => void select($, s.id)}>
+            {/* one line, cut by hand: a button's text wraps; the room left by `1: ` */}
+            <Text bold dimColor={!s.live} color={isMe ? ME : undefined}>{clip(petName(s), CARD_W - 2 - (digit ? 3 : 0))}</Text>
+          </Button>
+        </Box>
         <Text color={o.skin.body} wrap="truncate">{s.repo}</Text>
         <Text dimColor wrap="truncate">⎇ {s.branch ?? '—'}</Text>
         <Box gap={1}>{k.modelPill(s)}{k.ctx(s)}</Box>
         {/* the shelf's rows already say working or idle; a pet left waiting long says so */}
         {s.subagents ? <Text color={MOOD.busy.border!}>{plural(s.subagents, 'subagent')} working</Text>
           : sad ? <Text color={MOOD.waiting.border!} wrap="truncate">sad · left waiting {ago(v.now - s.mtimeMs).replace(' ago', '')}</Text>
+          : s.subagentsEver ? <Text dimColor>{plural(s.subagentsEver, 'subagent')} launched</Text>
           : <Text> </Text>}
         <Text dimColor>{s.bornMs ? `born ${ago(v.now - s.bornMs)}` : 'born ?'}</Text>
       </Box>
@@ -2185,7 +2182,6 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
   // the whole conversation once it is read; the shelf's short preview until then
   const said = talk?.id === s.id ? talk.said : s.recent
   const tmux = s.live?.tmux ? tmuxSession(s.live.tmux) : null
-  const where = tmux ? 'its tmux pane' : 'its background session'
   const mood = !s.live ? { ...MOOD.idle, label: '✝ closed' }
     : isAsleep(s, v.now) ? { ...MOOD.idle, label: 'zzz asleep' }
     : isSad(s, v.now, settings.sadMs) ? { ...MOOD.waiting, label: `sad: waiting on you for ${ago(v.now - s.mtimeMs).replace(' ago', '')}` }
@@ -2206,7 +2202,7 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
       <Box columnGap={2} flexWrap="wrap">
         {k.brand}
         <Button key="back" hotkey="b" plain label="back to the shelf" autoFocus onPress={() => void select($, null)} />
-        {canJump(s.live) ? <Button key="jump" hotkey="j" plain label={`${HOME} jump to ${where}`} onPress={() => void jump($, s)} /> : null}
+        {canJump(s.live) ? <Button key="jump" hotkey="a" plain label={`${HOME} attach`} onPress={() => void jump($, s)} /> : null}
         {s.live ? null : <Button key="resurrect" hotkey="r" plain label={`${WING} resurrect`} onPress={() => void resurrect($, s)} />}
         <Button key="resume" hotkey="c" plain label="copy resume command" onPress={() => void copyResume($, s)} />
         {Input && !s.live?.isElsewhere ? <Button key="rename" hotkey="e" plain label="✎ rename" onPress={() => void startRename($, s.id)} /> : null}
@@ -2233,7 +2229,11 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
           </Box>
         ) : <Text bold wrap="truncate">{petName(s)}</Text>}
         <Text color={o.skin.body} wrap="truncate">{s.repo}{s.branch ? ` · ${s.branch}` : ''}</Text>
-        <Box gap={1}>{k.modelPill(s)}{k.ctx(s)}<Text color={mood.fg} backgroundColor={mood.bg}> {mood.label} </Text></Box>
+        <Box gap={1}>
+          {k.modelPill(s)}{k.ctx(s)}<Text color={mood.fg} backgroundColor={mood.bg}> {mood.label} </Text>
+          {/* started with claude --bg: no terminal of its own, attach opens one */}
+          {s.live?.job ? <Text color="#3b3340" backgroundColor={PILL_BG}> ◐ background </Text> : null}
+        </Box>
         <Text dimColor wrap="truncate-start">{s.cwd}</Text>
         <Text dimColor>{lifeLine}</Text>
         {s.disk ? (
@@ -2353,7 +2353,7 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
             ? <Button key="convo-more" plain dimColor label={`show ${Math.min(CONVO_PAGE, said.length - shownN)} older of ${said.length - shownN} more`} onPress={() => void update($, convoShown, n => (n || CONVO_PAGE) + CONVO_PAGE)} />
             : null}
           {/* the same as the top row's jump, for whoever has scrolled down here: j presses that one */}
-          {canJump(s.live) ? <Button key="jump-bottom" plain label={`j: see the full conversation on ${where}`} onPress={() => void jump($, s)} /> : null}
+          {canJump(s.live) ? <Button key="jump-bottom" plain label="a: attach to see the full conversation" onPress={() => void jump($, s)} /> : null}
         </Box>
       ) : null}
     </Box>
@@ -2376,7 +2376,7 @@ async function agentPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSessi
       <Box columnGap={2} flexWrap="wrap">
         {k.brand}
         <Button key="agent-back" hotkey="b" plain label={`back to ${clip(petName(s), 30)}`} autoFocus onPress={() => void openAgent($, null)} />
-        {canJump(s.live) ? <Button key="jump" hotkey="j" plain label={`${HOME} jump to its pet's ${s.live!.tmux ? 'tmux pane' : 'background session'}`} onPress={() => void jump($, s)} /> : null}
+        {canJump(s.live) ? <Button key="jump" hotkey="a" plain label={`${HOME} attach to its pet`} onPress={() => void jump($, s)} /> : null}
       </Box>
       <Box flexDirection="row" gap={2} borderStyle="round" borderColor={running ? MOOD.busy.border! : GREY} paddingX={1}>
         {k.agentPet(s, a, 'agent-detail-pet')}
@@ -2419,8 +2419,6 @@ async function agentPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSessi
 // ─── register ────────────────────────────────────────────────────────────────
 
 const TITLE = 'TamaClaudchi'
-/** The header says which copy of the mod a pane runs: keep in step with .claude-plugin/plugin.json. */
-const VERSION = '0.1.0'
 /** With the pane closed and no alerts to raise, only the footer shows the pets: read them this many polls apart. */
 const CLOSED_POLLS = 4
 /** With every face dozing, the footer moves one frame in this many. */
@@ -2468,7 +2466,12 @@ export const register: Register = (on, options) => {
       await update($, me, () => id)
       if (id) await markRunning($, id)
     })
-    await update($, version, () => VERSION)
+    await update($, version, () => '')
+    // the version as its manifest says, shown in the shelf's legend
+    void $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`).then(text => {
+      const v: unknown = JSON.parse(text).version
+      if (typeof v === 'string') return update($, version, () => v)
+    }).catch(() => undefined)
     // Unasked, a pane seats from 144 columns and waits below that, so on a
     // wide terminal your pet greets you at start, as the logo would.
     if (settings.autoOpen) void open($, false)

@@ -272,8 +272,8 @@ test('a pet left waiting on you for a while looks sad, until it falls asleep', a
 
 test('a session follows the shelf another reads while its lease holds, and takes over when it lapses', async () => {
   const paths = { dir: '/h/.claude/tamaclaudchi', lease: '/h/.claude/tamaclaudchi/lease-m.json', shelf: '/h/.claude/tamaclaudchi/shelf-m.json' }
-  let lease = { schema: 5, by: 'other', at: NOW, everyMs: 4000 }
-  const shelf = { schema: 5, disk: null, sessions: [] }
+  let lease = { schema: 6, by: 'other', at: NOW, everyMs: 4000 }
+  const shelf = { schema: 6, disk: null, sessions: [] }
   // the reads it makes, as the engine's fs would answer them
   const $ = { fs: {
     stat: async () => ({ kind: 'file', size: JSON.stringify(shelf).length, mtimeMs: 1, isLink: false }),
@@ -558,7 +558,10 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     : markers.has(e.path) ? { value: { kind: 'file' as const, size: 0, mtimeMs: now, isLink: false } }
     : { deny: 'ENOENT' }))
   const reads: string[] = []
-  on('fs.read', async (_$, e) => (reads.push(e.path), { value: STATS[e.path] ?? JSON.stringify(REGISTRY[e.path]) }))
+  on('fs.read', async (_$, e) => (reads.push(e.path), {
+    // the mod's own manifest, for the version its legend shows
+    value: e.path.endsWith('/.claude-plugin/plugin.json') ? '{"name":"tamaclaudchi","version":"9.8.7"}' : STATS[e.path] ?? JSON.stringify(REGISTRY[e.path]),
+  }))
   // the shelf this session read, written for the other sessions on the machine
   const written = new Map<string, string>()
   on('fs.write', async (_$, e) => {
@@ -610,9 +613,9 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     if (e.argv[0] === 'sh' && e.argv[2]!.includes('-printf')) return ok(Object.keys(FILES).map(f =>
       `${(f.includes('/b.') ? now - 60_000 : f.includes('/c.') ? now - 2 * 3600_000 : now) / 1000}\t1\t${f}\n`).join(''))
     if (e.argv[0] === 'tmux') return ok('')
-    // b's subagents: two mid-task, one done
+    // b's subagents: two mid-task, one done, of five launched; `me` launched three, all done
     if (e.argv[0] === 'sh' && e.argv[2]!.includes('agent-*.jsonl'))
-      return ok(e.argv.slice(4).map(d => `\x1e${d}\n${d.includes('/b/') ? '0\n0\n1\n' : ''}`).join(''))
+      return ok(e.argv.slice(4).map(d => `\x1e${d}\n${d.includes('/b/') ? 'T 5\n0\n0\n1\n' : d.includes('/me/') ? 'T       3\n' : 'T 0\n'}`).join(''))
     const paths = e.argv.slice(4)
     const stdout = paths.map(p => {
       const id = p.split('/').pop()!.replace('.jsonl', '')
@@ -656,16 +659,19 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     // the groups say working or idle, so the cards carry no mood pill; b has two subagents at work
     expect(await ui.find({ type: 'Text', text: /needs you/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^2 subagents working$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /2 other running pets across 2 folders/ })).toBeDefined() // b here, e on another machine
+    // none at work: all it ever launched, in grey
+    expect((await ui.find({ type: 'Text', text: /^3 subagents launched$/ }))?.props.dimColor).toBe(true)
+    expect(await ui.find({ type: 'Text', text: /^3 running pets across 3 folders$/ })).toBeDefined() // you, b here, e on another machine
     // what Claude keeps on disk, red past 10 GB, and b's share on its card
     expect((await ui.find({ type: 'Text', text: /^12\.8 GB$/ }))?.props.color).toBe('#ff5555')
     expect(await ui.find({ type: 'Text', text: /^5\.7G$/ })).toBeDefined()
     // which copy of the mod this is, as its plugin.json says
-    expect(JSON.stringify(await ui.drawn())).toContain('v0.1.0')
+    expect((await ui.find({ type: 'Text', text: /^v9\.8\.7 $/ }))?.props.color).toBe('#78dce8') // as its manifest says
+    expect(await ui.find({ type: 'Text', text: /^Legend: body = repo/ })).toBeDefined()
     // the shelf was read here, and left for the other sessions on this machine,
     // without what the sessions said
-    expect(JSON.parse(written.get('/h/.claude/tamaclaudchi/lease-f3c19270a4e1-v5.json') ?? '{}').by).toBe('me')
-    const sharedShelf = JSON.parse(written.get('/h/.claude/tamaclaudchi/shelf-f3c19270a4e1-v5.json') ?? '{}')
+    expect(JSON.parse(written.get('/h/.claude/tamaclaudchi/lease-f3c19270a4e1-v6.json') ?? '{}').by).toBe('me')
+    const sharedShelf = JSON.parse(written.get('/h/.claude/tamaclaudchi/shelf-f3c19270a4e1-v6.json') ?? '{}')
     expect(sharedShelf.sessions.find((x: { id: string }) => x.id === 'b').recent).toEqual([])
     // e runs on another machine: on the shelf, but nothing here may jump to, kill or resurrect it
     expect(await ui.find({ type: 'Text', text: /another machine/ })).toBeDefined()
@@ -698,7 +704,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     // the killed session waits behind g
     expect(await ui.find({ type: 'Text', text: /Killed one/ })).toBeUndefined()
     expect(await ui.find({ key: 'graveyard' })).toBeDefined()
-    expect(JSON.stringify(await ui.drawn())).toContain('🪦 graveyard · 1 closed in the last 5 days')
+    expect(JSON.stringify(await ui.drawn())).toContain('🪦 graveyard · 1 closed')
     await ui.press({ key: 'graveyard' })
     expect(await ui.find({ type: 'Text', text: /Killed one/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /an ai title/ })).toBeUndefined()
@@ -806,7 +812,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     // a second way to its pane, below the conversation
     const bottom = JSON.stringify(await ui.drawn())
     expect(bottom.indexOf('"jump-bottom"')).toBeGreaterThan(bottom.indexOf('Conversation preview'))
-    expect(bottom).toContain('j: see the full conversation on its tmux pane')
+    expect(bottom).toContain('a: attach to see the full conversation')
     expect(await ui.find({ type: 'Text', text: /please fix the flaky test/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /📱 on Remote Control/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /needs you: permission prompt/ })).toBeDefined()
