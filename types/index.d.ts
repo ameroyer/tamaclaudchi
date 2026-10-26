@@ -130,6 +130,8 @@ export type TamaSession = {
   isToolPending: boolean
   /** Subagents it spawned that are still at work (live pets only). */
   subagents: number
+  /** Subagents it has launched in all, finished ones included (live pets only). */
+  subagentsEver: number
   /** The last few things said, oldest first. */
   recent: Said[]
   /** Its repo's colour and its branch's item, as slots kept once given; null until assigned. */

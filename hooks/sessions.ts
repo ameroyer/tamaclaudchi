@@ -158,6 +158,7 @@ export function parseSession(
     isToolPending: last?.type === 'assistant' && last.message?.stop_reason === 'tool_use',
     recent: recent.slice(-(opts.recent ?? RECENT)),
     subagents: 0,
+    subagentsEver: 0,
     disk: null,
     spend: null,
     mail: null,
