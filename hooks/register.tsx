@@ -108,7 +108,7 @@ export type Shelf = { sessions: TamaSession[]; disk: Disk | null }
  * Bumped when the files change shape. The files are named for it, so sessions
  * running another version share files of their own rather than fight over these.
  */
-const SCHEMA = 4
+const SCHEMA = 5
 const LEASE_POLLS = 3
 
 export const sharedPaths = (claudeDir: string, machine: string) => {
@@ -587,17 +587,29 @@ export async function readLive($: EngineInterface): Promise<Map<string, Live>> {
     }
     if (!e.id || e.hasEnded) continue
     if (e.live.isElsewhere) {
-      if (Date.now() - e.updatedMs < settings.windowMs) out.set(e.id, e.live)
+      if (Date.now() - e.updatedMs < settings.windowMs) out.set(e.id, joined(out.get(e.id), e.live))
       continue
     }
     if (!(await isRunning($, e.live.pid, e.live.procStart))) {
       e.hasEnded = true
       continue
     }
-    out.set(e.id, e.live)
+    out.set(e.id, joined(out.get(e.id), e.live))
   }
   for (const name of registry.keys()) if (!seen.has(name)) registry.delete(name)
   return out
+}
+
+/**
+ * Two live entries for one session: a background session (claude --bg), and a
+ * `claude attach` showing it, which registers with the same id, as a session
+ * of its own, with its tmux pane but no job. The background process is the
+ * session; the attach lends it its pane, where a jump finds it.
+ */
+function joined(a: Live | undefined, b: Live): Live {
+  const bg = a?.job ? a : b.job ? b : null
+  if (!a || !bg) return b
+  return { ...bg, tmux: bg.tmux ?? (bg === a ? b : a).tmux }
 }
 
 /** The transcripts worth reading, newest first: the recent ones, and every live one. */
