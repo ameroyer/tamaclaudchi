@@ -38,6 +38,8 @@ claude
 
 - **Run Claude Code inside tmux** (`tmux new -s work`, then `claude`), so a pet
   can take you to its session, and you can hatch, resurrect and kill pets.
+  A background session (`claude --bg`) opens with `claude attach` in a tmux
+  session of its own.
 - **Use the fullscreen layout** (`/tui fullscreen`) to dock the pane on the
   right. Otherwise it opens above the prompt.
 
@@ -78,7 +80,7 @@ to message it.
 | `s` | what the pets would cost at API prices | |
 | `m` | your sessions' conversations with each other | |
 | `b` | | back |
-| `j` | | jump to its tmux pane |
+| `j` | | jump to its tmux pane, or attach its background session |
 | `r` | | resurrect it (`claude --resume`) |
 | `e` | | rename it |
 | `c` | | copy its resume command |
@@ -176,6 +178,7 @@ process call, never through a shell with your input in the command:
 | `cat /etc/machine-id`, `readlink`, `ioreg` | once | which machine this is (above) |
 | `chmod 700` | once | keep `~/.claude/tamaclaudchi/` to your user |
 | `tmux` (`display-message`, `switch-client`, `select-window`, `select-pane`, `new-session`, `has-session`, `list-sessions`, `send-keys`, `list-panes`, `kill-pane`, `kill-session`) | `j`, `n`, `r`, `k` | jump to a pet, hatch one (`claude` in a new tmux session), resurrect one (`claude --resume <id>`), kill one |
+| `claude attach <job>` in a new tmux session (`bg-<job>`) | `j` on a background session | open a session started with `claude --bg` (outside tmux, the command is copied instead) |
 | `kill -TERM`, then `kill -KILL` | `k` ×2 | kill a pet not in tmux, only once its process is sure to be that session |
 | `rm -rf` | `x` ×2 | clean a closed pet's temp folder (above) |
 | `sh -c 'printf … >> <transcript>'` | `e` on a closed pet | the rename line (above) |
