@@ -65,6 +65,8 @@ export type Live = {
   isElsewhere: boolean
   /** Its tmux pane, `session:@window.%pane`. */
   tmux: string | null
+  /** Its background job, for a session started with `claude --bg`: `claude attach <job>` opens it. */
+  job: string | null
   name: string | null
   /** Remote Control is on: Claude Code keeps its bridge session id in the registry while it is. */
   isRemote: boolean

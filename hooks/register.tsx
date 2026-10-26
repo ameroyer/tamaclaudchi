@@ -566,6 +566,8 @@ export async function readLive($: EngineInterface): Promise<Map<string, Live>> {
             waitingFor: typeof reg.waitingFor === 'string' ? reg.waitingFor : null,
             // a pane on another machine is not this tmux server's to reach
             tmux: typeof reg.tmux === 'string' && TMUX_PANE.test(reg.tmux) && !isElsewhere ? reg.tmux : null,
+            // a background session (claude --bg): `claude attach <job>` opens it
+            job: typeof reg.jobId === 'string' && SESSION_ID.test(reg.jobId) && !isElsewhere ? reg.jobId : null,
             name: typeof reg.name === 'string' ? reg.name : null,
             // written when /remote-control connects, cleared when it stops
             isRemote: typeof reg.bridgeSessionId === 'string' && reg.bridgeSessionId !== '',
@@ -1168,11 +1170,36 @@ export async function openAgent($: EngineInterface, id: string | null) {
   if (a && (await read($, trace))?.id !== a.id) await readTrace($, a)
 }
 
-/** Brings the pet's tmux pane forward. */
+/** Whether a pet can be jumped to: its tmux pane, or its background session. */
+export const canJump = (live: Live | null) => !!live && !live.isElsewhere && !!(live.tmux || live.job)
+
+/** Brings the pet's tmux pane forward, or opens its background session. */
 export async function jump($: EngineInterface, s: TamaSession) {
-  if (!s.live?.tmux) return
+  if (!s.live) return
   await markSeen($, [s.id])
-  await jumpTo($, s.live.tmux, s.live.name ?? nameOf(s))
+  if (s.live.tmux) await jumpTo($, s.live.tmux, s.live.name ?? nameOf(s))
+  else if (s.live.job) await attachJob($, s.live.job, s.live.name ?? nameOf(s))
+}
+
+/**
+ * Opens a background session (claude --bg): `claude attach <job>` in a tmux
+ * session of its own, reused while it lasts, then goes there. Outside tmux,
+ * the attach command is copied.
+ */
+async function attachJob($: EngineInterface, job: string, name: string) {
+  if (!(await $.env.get('TMUX'))) {
+    await copyText($, `claude attach ${job}`, 'Not inside tmux here, so the attach command')
+    return
+  }
+  const tmuxName = `bg-${job}`
+  if ((await run($, ['tmux', 'has-session', '-t', `=${tmuxName}`])).exitCode !== 0) {
+    const made = await run($, ['tmux', 'new-session', '-d', '-s', tmuxName, `claude attach ${job}`])
+    if (made.exitCode !== 0) {
+      $.ui.toast(`tmux could not open ${name}: ${made.stderr.trim() || 'is tmux installed?'}`)
+      return
+    }
+  }
+  await jumpTo($, `${tmuxName}:`, name)
 }
 
 /**
@@ -1183,15 +1210,29 @@ async function jumpTo($: EngineInterface, target: string, name: string) {
   const window = target.split('.')[0]!
   const pane = target.includes('%') ? tmuxPane(target) : window
   // switch only this session's own tmux client: outside tmux, another one would be moved
-  const isInTmux = !!(await $.env.get('TMUX'))
-  if (isInTmux && (await run($, ['tmux', 'switch-client', '-t', pane])).exitCode === 0) {
-    await run($, ['tmux', 'select-window', '-t', pane])
-    await run($, ['tmux', 'select-pane', '-t', pane])
-    $.ui.toast(`Jumped to ${name}`)
+  if (!(await $.env.get('TMUX'))) {
+    await copyText($, `tmux attach -t ${shellQuote(window)} \\; select-pane -t ${shellQuote(pane)}`, 'Not inside tmux here, so the attach command')
     return
   }
-  await $.ui.copy({ text: `tmux attach -t ${shellQuote(window)} \\; select-pane -t ${shellQuote(pane)}` })
-  $.ui.toast('Not inside tmux here, so the attach command is on your clipboard.')
+  const switched = await run($, ['tmux', 'switch-client', '-t', pane])
+  if (switched.exitCode !== 0) {
+    // its pane is gone, or on another tmux server than this one
+    $.ui.toast(`Could not jump to ${name}: ${switched.stderr.trim().split('\n')[0] || 'tmux could not switch to its pane'}.`)
+    return
+  }
+  await run($, ['tmux', 'select-window', '-t', pane])
+  await run($, ['tmux', 'select-pane', '-t', pane])
+  $.ui.toast(`Jumped to ${name}`)
+}
+
+/**
+ * Copies `text` and says so, as `<what> is on your clipboard`; where nothing
+ * could be copied, the toast shows the text to copy by hand.
+ */
+async function copyText($: EngineInterface, text: string, what: string) {
+  const copied = await $.ui.copy({ text })
+  if (copied.isCopied) $.ui.toast(`${what} is on your clipboard.`)
+  else $.ui.toast(`${what} could not be copied (${copied.reason}): ${text}`)
 }
 
 /**
@@ -1203,6 +1244,7 @@ export async function resurrect($: EngineInterface, s: TamaSession) {
   const now = (await readLive($)).get(s.id)
   if (now) {
     if (now.tmux) await jumpTo($, now.tmux, now.name ?? nameOf(s))
+    else if (now.job && !now.isElsewhere) await attachJob($, now.job, now.name ?? nameOf(s))
     else $.ui.toast(`${nameOf(s)} is running already${now.isElsewhere ? ', on another machine' : ''}.`)
     return
   }
@@ -1373,13 +1415,11 @@ export async function cleanAll($: EngineInterface, closed: TamaSession[]) {
 }
 
 export async function copyResume($: EngineInterface, s: TamaSession) {
-  await $.ui.copy({ text: `cd ${shellQuote(s.cwd)} && claude --resume ${s.id}` })
-  $.ui.toast('Resume command copied.')
+  await copyText($, `cd ${shellQuote(s.cwd)} && claude --resume ${s.id}`, 'The resume command')
 }
 
 export async function copyPath($: EngineInterface, path: string) {
-  await $.ui.copy({ text: path })
-  $.ui.toast('Path copied.')
+  await copyText($, path, 'The path')
 }
 
 /** What leads a message asking a pet to rename itself: its own copy of the mod takes it, its model never reads it. */
@@ -1787,7 +1827,7 @@ function card($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?:
         <Box width={CARD_W - 2} justifyContent="space-between">
           {isMe ? <Text bold color={ME}>★ you</Text>
             : !s.live ? <Button key={`wing-${s.id}`} plain label={`${WING} resurrect`} onPress={() => void resurrect($, s)} />
-            : s.live.tmux ? <Button key={`home-${s.id}`} plain label={crowded ? `${HOME} jump` : `${HOME} jump to pane`} onPress={() => void jump($, s)} />
+            : canJump(s.live) ? <Button key={`home-${s.id}`} plain label={crowded ? `${HOME} jump` : s.live.tmux ? `${HOME} jump to pane` : `${HOME} attach`} onPress={() => void jump($, s)} />
             : s.live.isElsewhere ? <Text dimColor>↗ another machine</Text>
             : <Text> </Text>}
           <Box gap={1}>
@@ -2029,6 +2069,7 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
   // the whole conversation once it is read; the shelf's short preview until then
   const said = talk?.id === s.id ? talk.said : s.recent
   const tmux = s.live?.tmux ? tmuxSession(s.live.tmux) : null
+  const where = tmux ? 'its tmux pane' : 'its background session'
   const mood = !s.live ? { ...MOOD.idle, label: '✝ closed' }
     : isAsleep(s, v.now) ? { ...MOOD.idle, label: 'zzz asleep' }
     : isSad(s, v.now, settings.sadMs) ? { ...MOOD.waiting, label: `sad: waiting on you for ${ago(v.now - s.mtimeMs).replace(' ago', '')}` }
@@ -2039,7 +2080,7 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
   const maxW = Math.max(16, Math.floor(v.cols * 0.75))
   const bubbleW = (text: string) => Math.min(maxW, widest(tidy(text)) + 4)
   const lifeLine = [
-    s.live ? `running${s.live.isElsewhere ? ' on another machine' : tmux ? ` in tmux ${tmux}` : ''}${s.live.isRemote ? ` · ${PHONE} on Remote Control` : ''}` : 'closed',
+    s.live ? `running${s.live.isElsewhere ? ' on another machine' : tmux ? ` in tmux ${tmux}` : s.live.job ? ` in the background (${s.live.job})` : ''}${s.live.isRemote ? ` · ${PHONE} on Remote Control` : ''}` : 'closed',
     `last seen ${ago(v.now - s.mtimeMs)}`,
     s.bornMs ? `born ${ago(v.now - s.bornMs)}` : null,
   ].filter(Boolean).join(' · ')
@@ -2049,7 +2090,7 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
       <Box columnGap={2} flexWrap="wrap">
         {k.brand}
         <Button key="back" hotkey="b" plain label="back to the shelf" autoFocus onPress={() => void select($, null)} />
-        {tmux ? <Button key="jump" hotkey="j" plain label={`${HOME} jump to its tmux pane`} onPress={() => void jump($, s)} /> : null}
+        {canJump(s.live) ? <Button key="jump" hotkey="j" plain label={`${HOME} jump to ${where}`} onPress={() => void jump($, s)} /> : null}
         {s.live ? null : <Button key="resurrect" hotkey="r" plain label={`${WING} resurrect`} onPress={() => void resurrect($, s)} />}
         <Button key="resume" hotkey="c" plain label="copy resume command" onPress={() => void copyResume($, s)} />
         {Input && !s.live?.isElsewhere ? <Button key="rename" hotkey="e" plain label="✎ rename" onPress={() => void update($, renaming, id => id === s.id ? null : s.id)} /> : null}
@@ -2194,7 +2235,7 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
             ? <Button key="convo-more" plain dimColor label={`show ${Math.min(CONVO_PAGE, said.length - shownN)} older of ${said.length - shownN} more`} onPress={() => void update($, convoShown, n => (n || CONVO_PAGE) + CONVO_PAGE)} />
             : null}
           {/* the same as the top row's jump, for whoever has scrolled down here: j presses that one */}
-          {tmux ? <Button key="jump-bottom" plain label="j: see the full conversation on its tmux pane" onPress={() => void jump($, s)} /> : null}
+          {canJump(s.live) ? <Button key="jump-bottom" plain label={`j: see the full conversation on ${where}`} onPress={() => void jump($, s)} /> : null}
         </Box>
       ) : null}
     </Box>
@@ -2217,7 +2258,7 @@ async function agentPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSessi
       <Box columnGap={2} flexWrap="wrap">
         {k.brand}
         <Button key="agent-back" hotkey="b" plain label={`back to ${clip(petName(s), 30)}`} autoFocus onPress={() => void openAgent($, null)} />
-        {s.live?.tmux ? <Button key="jump" hotkey="j" plain label={`${HOME} jump to its pet's tmux pane`} onPress={() => void jump($, s)} /> : null}
+        {canJump(s.live) ? <Button key="jump" hotkey="j" plain label={`${HOME} jump to its pet's ${s.live!.tmux ? 'tmux pane' : 'background session'}`} onPress={() => void jump($, s)} /> : null}
       </Box>
       <Box flexDirection="row" gap={2} borderStyle="round" borderColor={running ? MOOD.busy.border! : GREY} paddingX={1}>
         {k.agentPet(s, a, 'agent-detail-pet')}
