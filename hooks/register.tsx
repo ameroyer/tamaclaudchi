@@ -209,8 +209,8 @@ type Lease = {
 
 export type Shelf = { sessions: TamaSession[]; disk: Disk | null }
 
-export const sharedPaths = (claudeDir: string, machine: string) => {
-  const dir = `${claudeDir}/tamaclaudchi`
+export const sharedPaths = (configRoot: string, machine: string) => {
+  const dir = `${configRoot}/tamaclaudchi`
   return { dir, lease: `${dir}/lease-${machine}.json`, shelf: `${dir}/shelf-${machine}.json` }
 }
 type Paths = ReturnType<typeof sharedPaths>
