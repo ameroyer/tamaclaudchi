@@ -142,7 +142,7 @@ name under `~/.claude/tamaclaudchi/`.
 
 **What it writes.**
 
-- `~/.claude/tamaclaudchi/lease-<machine>.json` and `shelf-<machine>.json`: the
+- `~/.claude/tamaclaudchi/lease-<machine>-v<n>.json` and `shelf-<machine>-v<n>.json`: the
   lease that lets one session read for the whole machine, and what it found
   (names, folders, moods, spend; never what the sessions said). The folder is
   made readable by your user only (`chmod 700`).
