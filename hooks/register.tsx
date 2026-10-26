@@ -1,6 +1,4 @@
-// TamaClaudchi in Claude Code: a pane with a pixel pet for every session on
-// this machine. Every function that takes $ lives in this file, as the plugin
-// directory asks; plain.tsx and the other modules never touch $.
+// TamaClaudchi: the hooks, and every function that takes the engine interface.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, RenderElement, RenderInput, Register } from 'claude-code'
@@ -13,7 +11,7 @@ import { mailFrames, outfits, petRest, ITEM_COUNT, itemKey, repoKey, SKIN_COUNT,
 import { lastDays, readCalls, spendOf, USAGE_AWK, dayOf, type Call } from './spend'
 import { lettersOf, MAIL_AWK, mailEdges, mailRead, PROMPT_AWK, readMail, postsOf, threadsOf, hasRecentMail, isFrom, type MailFact, type End, type Thread } from './mail'
 import { bytes, clip, vivid, ago, bytesShort, diskColor, GiB, lights, plural, tidy, tokenCount, usd, when, widest } from './format'
-import { ACCENT, AGENTS_SCRIPT, AGENTS_SHOWN, AGENT_W, ASKING, AWAKE_SHOWN, BATCH, CANDIDATES, CARD_DISK_KB, CARD_H, CARD_W, CLEAN_ALL, CLOSED_POLLS, CONVO_BYTES, CONVO_PAGE, DIGITS, DISK_MS, DISK_SCRIPT, DOZE, DOZE_FRAMES, EGG_SHOWN_MS, FOOTER_FRAME_MS, FRESH_BATCH, GIT_SCRIPT, GIT_TREES, GRAVE, GRAVES_SHOWN, GREY, GROUPS, HEADER, HOVER, JUMP_W, LEASE_POLLS, LIST_SCRIPT, LSTART, MACHINE_SCRIPT, MAIL_CHARS, MAIL_FILES, MAIL_FRAME_MS, MAIL_SCRIPT, MAX_CLOSED, ME, MIN_CLEAN_KB, MOOD, NAME_W, OUTLINE, PHONE, POSTS_SHOWN, PROJECT_DIR, READ_SCRIPT, RECENT_WRITE_MS, RED, REDRAW_MS, RENAME_TAG, SCHEMA, SESSION_ID, SLOTS_KEY, SPEND_TOP, STEPS_SHOWN, SUBAGENT_SCRIPT, TAB_OPEN, TAB_SHUT, TAB_W, TEMP_DIR, TITLE, TMUX_PANE, TMUX_TARGET, USAGE_SCRIPT, VERSION, WAVE, cache, cleanName, closedSubs, dirOf, diskById, everyMs, factsOf, isAgentRunning, machineFrom, names, newMail, news, openThread, playing, readFrom, registry, sameStart, searchGraves, shellQuote, subCache, tmuxPane, tmuxSession, windowSpend, type Disk, type Next, type PaneEvent, type Proc, type Told, type Transcript } from './plain'
+import { ABS_PATH, AGENT_FILE, AGENT_ID, APPEND_LINE_SCRIPT, DOTS_ONLY, HOME_TILDE, PS_LINE, SPEND_SIGN, TMUX_SESSION_SIGIL, ACCENT, AGENTS_SCRIPT, AGENTS_SHOWN, AGENT_W, ASKING, AWAKE_SHOWN, BATCH, CANDIDATES, CARD_DISK_KB, CARD_H, CARD_W, CLEAN_ALL, CLOSED_POLLS, CONVO_BYTES, CONVO_PAGE, DIGITS, DISK_MS, DISK_SCRIPT, DOZE, DOZE_FRAMES, EGG_SHOWN_MS, FOOTER_FRAME_MS, FRESH_BATCH, GIT_SCRIPT, GIT_TREES, GRAVE, GRAVES_SHOWN, GREY, GROUPS, HEADER, HOVER, JUMP_W, LEASE_POLLS, LIST_SCRIPT, LSTART, MACHINE_SCRIPT, MAIL_CHARS, MAIL_FILES, MAIL_FRAME_MS, MAIL_SCRIPT, MAX_CLOSED, ME, MIN_CLEAN_KB, MOOD, NAME_W, OUTLINE, PHONE, POSTS_SHOWN, PROJECT_DIR, READ_SCRIPT, RECENT_WRITE_MS, RED, REDRAW_MS, RENAME_TAG, SCHEMA, SESSION_ID, SLOTS_KEY, SPEND_TOP, STEPS_SHOWN, SUBAGENT_SCRIPT, TAB_OPEN, TAB_SHUT, TAB_W, TEMP_DIR, TITLE, TMUX_PANE, TMUX_TARGET, USAGE_SCRIPT, VERSION, WAVE, cache, cleanName, closedSubs, dirOf, diskById, everyMs, factsOf, isAgentRunning, machineFrom, names, newMail, news, openThread, playing, readFrom, registry, sameStart, searchGraves, shellQuote, subCache, tmuxPane, tmuxSession, windowSpend, type Disk, type Next, type PaneEvent, type Proc, type Told, type Transcript } from './plain'
 
 // The values the mod reads or writes, one plugin and key each.
 const convo = atom({ plugin: 'tamaclaudchi', key: 'convo' } as const, null as { id: string; mtimeMs: number; said: Said[] } | null)
@@ -313,7 +311,7 @@ async function readProcesses($: EngineInterface): Promise<Map<number, Proc> | nu
   if (!r || r.exitCode !== 0) return null
   const out = new Map<number, Proc>()
   for (const l of r.stdout.split('\n')) {
-    const m = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(l)
+    const m = PS_LINE.exec(l)
     if (m) out.set(Number(m[1]), { ppid: Number(m[2]), start: m[3]! })
   }
   return out
@@ -669,7 +667,7 @@ async function readSubagentCalls($: EngineInterface, shelf: TamaSession[]): Prom
     let list = s.live ? undefined : closedSubs.get(dir)
     if (!list) {
       list = (await $.fs.list(dir).catch(() => []))
-        .filter(f => f.kind === 'file' && /^agent-[\w-]+\.jsonl$/.test(f.name))
+        .filter(f => f.kind === 'file' && AGENT_FILE.test(f.name))
         .map(f => ({ path: `${dir}/${f.name}`, id: s.id, mtimeMs: f.mtimeMs, size: f.size, stamp: `${f.mtimeMs}:${f.size}` }))
       if (s.live) closedSubs.delete(dir)
       else closedSubs.set(dir, list)
@@ -734,7 +732,7 @@ async function readDisk($: EngineInterface, root: string, shelf: TamaSession[], 
   if (!res) return
   const [head = '', each = ''] = res.stdout.split('\x1f\n')
   const [tempDir = '', ...wholes] = head.split('\n')
-  if (!/^\/[^\x00-\x1f]*$/.test(tempDir)) return
+  if (!ABS_PATH.test(tempDir)) return
   const kb = new Map<string, number>()
   for (const l of [...wholes, ...each.split('\n')]) {
     const tab = l.indexOf('\t')
@@ -810,7 +808,7 @@ export async function readAgents($: EngineInterface, s: TamaSession) {
     const [path = '', mtime = '0', done = '0', modelLine = '', metaLine = ''] = chunk.split('\n')
     let meta: { description?: string; agentType?: string } = {}
     try { meta = JSON.parse(metaLine) } catch {}
-    const id = /agent-([\w-]+)\.jsonl$/.exec(path)?.[1]
+    const id = AGENT_ID.exec(path)?.[1]
     if (!id) continue
     list.push({
       id, path, description: meta.description ?? 'a subagent', type: meta.agentType ?? 'agent',
@@ -998,7 +996,7 @@ export async function resurrect($: EngineInterface, s: TamaSession) {
  */
 export async function spawnPet($: EngineInterface, input: string) {
   const home = (await $.env.get('HOME')) ?? ''
-  const dir = input.trim().replace(/^~(?=\/|$)/, home) || home
+  const dir = input.trim().replace(HOME_TILDE, home) || home
   if ((await $.fs.stat(dir).catch(() => null))?.kind !== 'dir') {
     $.ui.toast(`No folder at ${dir}.`)
     return
@@ -1046,7 +1044,7 @@ export async function killPet($: EngineInterface, s: TamaSession) {
     const pane = tmuxPane(tmux)
     const where = await run($, ['tmux', 'display-message', '-p', '-t', pane, '#{session_id} #{session_name}'])
     const [sessionId = '', ...rest] = where.exitCode === 0 ? where.stdout.trim().split(' ') : []
-    if (sessionId.startsWith('$')) {
+    if (sessionId.startsWith(TMUX_SESSION_SIGIL)) {
       const session = rest.join(' ')
       const panes = await run($, ['tmux', 'list-panes', '-s', '-t', sessionId, '-F', '#{pane_id}'])
       const count = panes.exitCode === 0 ? panes.stdout.split('\n').filter(Boolean).length : 0
@@ -1089,7 +1087,7 @@ export async function killPet($: EngineInterface, s: TamaSession) {
  */
 async function cleanOne($: EngineInterface, s: TamaSession, tempDir: string, running: Set<string>): Promise<'cleaned' | 'running' | 'unsafe' | string> {
   const [project = '', file = ''] = s.path.split('/').slice(-2)
-  const isSafe = TEMP_DIR.test(tempDir) && PROJECT_DIR.test(project) && !/^\.+$/.test(project)
+  const isSafe = TEMP_DIR.test(tempDir) && PROJECT_DIR.test(project) && !DOTS_ONLY.test(project)
     && file === `${s.id}.jsonl` && SESSION_ID.test(s.id)
   if (!isSafe) return 'unsafe'
   // it may have been resurrected since the shelf was read; and one that wrote
@@ -1178,7 +1176,7 @@ export async function renamePet($: EngineInterface, s: TamaSession, text: string
     const isSafe = SESSION_ID.test(s.id) && s.path.startsWith(projects) && !s.path.includes('/../')
       && s.path.endsWith(`/${s.id}.jsonl`)
     const line = JSON.stringify({ type: 'custom-title', customTitle: name, sessionId: s.id })
-    const wrote = isSafe ? await run($, ['sh', '-c', 'printf \'%s\\n\' "$1" >> "$2"', 'sh', line, s.path]) : null
+    const wrote = isSafe ? await run($, ['sh', '-c', APPEND_LINE_SCRIPT, 'sh', line, s.path]) : null
     if (wrote?.exitCode !== 0) {
       $.ui.toast(`Could not rename ${nameOf(s)}: its transcript cannot be written.`)
       return
@@ -1372,7 +1370,7 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
           ) : (
             <Box columnGap={2} flexWrap="wrap">
               <Button key="spawn" hotkey="n" plain label="+ new pet" onPress={() => void update($, isSpawning, () => true)} />
-              <Button key="spend" hotkey="s" plain label={`$ spend · ${usd(spentToday)} today`} onPress={() => void update($, showSpend, () => true)} />
+              <Button key="spend" hotkey="s" plain label={`${SPEND_SIGN} spend · ${usd(spentToday)} today`} onPress={() => void update($, showSpend, () => true)} />
               {posts ? <Button key="mailroom" hotkey="m" plain label={`${LETTER} ${plural(posts, 'message')}`} onPress={() => void openMailroom($, true)} /> : null}
             </Box>
           )}
