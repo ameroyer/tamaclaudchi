@@ -1,5 +1,4 @@
 // Text for the cards and bubbles.
-import { contextWindow } from './sessions'
 
 // Bubbles are drawn again at every redraw, from the same messages: tidied
 // once each. Bounded, as conversations come and go.
@@ -65,9 +64,9 @@ export function widest(text: string): number {
 
 export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
-/** The device's five context lights, and the share of the window used. */
-export function lights(tokens: number): { on: string; off: string; color: string; pct: number } {
-  const share = tokens / contextWindow(tokens)
+/** The device's five context lights, and how far the context has come to `limit` (where Claude Code auto-compacts it). */
+export function lights(tokens: number, limit: number): { on: string; off: string; color: string; pct: number } {
+  const share = Math.min(1, tokens / limit)
   const n = Math.min(5, Math.round(share * 5))
   const color = share > 0.8 ? '#ff6188' : share > 0.6 ? '#ffd866' : '#a9dc76'
   return { on: '●'.repeat(n), off: '○'.repeat(5 - n), color, pct: Math.round(100 * share) }

@@ -1,6 +1,6 @@
 {
   "name": "tamaclaudchi",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "TamaClaudchi in Claude Code: a pane of pixel pets, one per session across every folder, hatted by model",
   "author": {
     "name": "Amelie Royer"
@@ -46,11 +46,33 @@
       "description": "How far back closed pets are kept on the graveyard and counted on the spend page, 1 to 30.",
       "default": 5
     },
-    "sadAfterMinutes": {
+    "sleepyAfterHours": {
       "type": "number",
-      "title": "Sad after (minutes)",
-      "description": "A running pet that has waited on you this long looks sad. 0: never.",
-      "default": 900
+      "title": "Sleepy after (hours)",
+      "description": "A running pet idle this long looks sleepy. A pet stuck on you (a permission prompt) looks sad at once, whatever this says. 0: never sleepy.",
+      "default": 12
+    },
+    "contextAlertPercent": {
+      "type": "number",
+      "title": "Context alert (% full)",
+      "description": "A running pet's context this full is announced once, and its card and page offer a compact. 0: never.",
+      "default": 90
+    },
+    "subagentsShown": {
+      "type": "number",
+      "title": "Subagents shown",
+      "description": "How many subagents a pet's page shows, 1 to 30: the running ones first, then the newest, however long ago they ran.",
+      "default": 6
+    },
+    "hatchIn": {
+      "type": "string",
+      "title": "Hatch and resurrect in",
+      "description": "Where a new or resurrected pet runs: a background session (claude --bg), which needs no terminal of its own and is attached to on demand, or a tmux session of its own. A folder not trusted yet always hatches in tmux, to ask you.",
+      "default": "background",
+      "options": [
+        "background",
+        "tmux"
+      ]
     },
     "diskWarnGb": {
       "type": "number",

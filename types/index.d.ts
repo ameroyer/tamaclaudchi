@@ -104,6 +104,15 @@ export type Spend = {
   days: Record<string, number>
 }
 
+/** How the shelf puts its running pets in rows: by mood, repo or model, or one row, the latest first. */
+export type Grouping = 'mood' | 'repo' | 'model' | 'recent'
+
+/**
+ * The new-pet form: its folder (null: this session's), a first prompt, a
+ * model (null: the default), and whether it gets a git worktree of its own.
+ */
+export type Hatch = { dir: string | null; prompt: string; model: string | null; worktree: boolean }
+
 /** One session on the shelf, as read from its transcript. */
 export type TamaSession = {
   id: string
@@ -126,6 +135,9 @@ export type TamaSession = {
   bornMs: number | null
   /** Context tokens of the last reply, 0 when unknown. */
   contextTokens: number
+  /** How many times it was compacted, and the tokens those compactions took out of its context: the whole conversation is about these and the context's. */
+  compactions: number
+  droppedTokens: number
   /** The last reply asked for a tool and no result has come back. */
   isToolPending: boolean
   /** Subagents it spawned that are still at work (live pets only). */
@@ -185,8 +197,8 @@ declare module 'claude-code' {
       disk: { tempDir: string; tempKb: number; logKb: number } | null
       /** The footer's frame: only the footer reads it, so its tick redraws nothing else. */
       footerFrame: number
-      /** The opened pet's subagents, the running ones first. */
-      agents: { id: string; list: Agent[] } | null
+      /** The opened pet's subagents, the running ones first, as many as the setting shows; `total` it ever launched. */
+      agents: { id: string; list: Agent[]; total: number } | null
       /** The subagent whose trace page is open, or null. */
       agentPick: string | null
       /** The opened subagent's trace, as of its transcript's mtime. */
@@ -201,6 +213,18 @@ declare module 'claude-code' {
       mailTab: string | null
       /** The text of the messages a page shows, by message id, as read for `key` (the ids it read for). */
       mailText: { key: string; byId: Record<string, string> } | null
+      /** How the shelf's running pets are put in rows. */
+      groupBy: Grouping
+      /** The broadcast box is open on the shelf. */
+      isBroadcasting: boolean
+      /** Who a broadcast goes to: `all`, or `repo:<name>`. */
+      broadcastTo: string
+      /** The new-pet form as filled in so far. */
+      hatch: Hatch
+      /** The folders the new-pet form offers, for what its folder field held (`for`). */
+      folderHints: { for: string | null; dirs: string[] }
+      /** The pet whose page shows the colours its repo can take, or null. */
+      pickingColour: string | null
     }
   }
 }

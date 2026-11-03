@@ -6,7 +6,7 @@ TamaClaudchi is a cute management for Claude Code sessions on your machine, in a
 See at a glance which sessions are working, which need you, and which have
 gone quiet.
 
-You can also use this plugin to quickly switch between sessions via tmux, send messages across sessions and review their conversations, monitor their subagents etc. It also displays useful info at a glance such that the size of the current context, model used etc.
+You can also use this plugin to hatch and attach to sessions (in the background by default, or in tmux), jump to the next one that needs you, send messages across sessions, broadcast to all of them, review their conversations, monitor their subagents etc. It also displays useful info at a glance such that the size of the current context, model used etc.
 
 
 
@@ -36,11 +36,15 @@ claude
 
 #### Tips
 
+- **Pets hatch in the background.** `n` and resurrect start `claude --bg`, so
+  a pet needs no terminal of its own and survives the one you close; `claude
+  stop` ends it. A folder you have not trusted yet hatches in tmux instead, so
+  claude can ask you. Set `hatchIn` to `tmux` for the old way.
 - **Run Claude Code inside tmux** (`tmux new -s work`, then `claude`), so a pet
-  can take you to its session, and you can hatch, resurrect and kill pets.
-  A background session (`claude --bg`) opens with `claude attach` in a tmux
-  session of its own. From inside an attached background session, `a` moves
-  the tmux client showing that attach.
+  can take you to its session: a background pet opens with `claude attach` in
+  a tmux session of its own. Outside tmux, the attach command is copied for
+  you to run. From inside an attached background session, `a` moves the tmux
+  client showing that attach.
 - **Use the fullscreen layout** (`/tui fullscreen`) to dock the pane on the
   right. Otherwise it opens above the prompt.
 
@@ -55,24 +59,42 @@ Run `claude plugin uninstall tamaclaudchi@tamaclaudchi `
 
 | you see | it means |
 |---|---|
-| body colour | the repo it runs in |
+| body colour | the repo it runs in (`p` on its page picks another, for every pet of that repo) |
 | hat | the model: wizard Fable, crown Opus, poet's hat Sonnet, fox mask Haiku |
 | held item | its branch |
 | an egg | it hasn't replied yet |
 | a halo, faded | it has closed |
-| a tear | it has been waiting on you for hours |
+| a frown and a tear | it is stuck on you (a permission prompt) |
+| eyes shut, a z | it has been idle for hours (`sleepyAfterHours`) |
 | ★ you | this session |
 | 💌 | it sent or got a message from another session lately, and you haven't looked yet |
 
-The lights under a pet show how full its context window is. The little faces
+The lights under a pet (and its `% ctx`) show how far its context has come to
+where Claude Code auto-compacts it, as Claude Code reckons it: the model's
+window (1M for Fable, Opus 4.7 and later, Sonnet 5 and later, Haiku 5.5; 200K
+for the others), or a narrower `autoCompactWindow` you set (in
+`~/.claude/settings.json`, overridden by the pet's project in its
+`.claude/settings.json` and `.claude/settings.local.json`, top-level or per
+model, as `/autocompact` writes it, or `CLAUDE_CODE_AUTO_COMPACT_WINDOW`),
+less 33K Claude Code keeps for the reply and the summary: about 967K for a 1M
+model. 100 minus it is Claude Code's own "% until auto-compact". A pet that
+has been compacted also shows, on its page, about how long its whole
+conversation is: its context plus what each compaction took out. The little faces
 at the right of your prompt's footer are the running pets: waving ones are
-working, a red `!` needs you.
+working, a red `!` needs you. Past `contextAlertPercent` (90%), a pet's card
+and page offer `⇲ compact`, which runs `/compact` in it once its turn is over.
 
 ## Using it
 
-Click a pet (or press its number) to open its page: its subagents, git
-activity, its messages to and from other sessions, the conversation, and a box
-to message it.
+Click a pet (or press its number: 1 to 9, then 0 for the tenth) to open its
+page: its subagents, git activity, its messages to and from other sessions,
+the conversation, and a box to message it. From the eleventh on, Tab to it, or
+`j` for the next that needs you. A name too long for its card shows whole
+while you hover it.
+
+The shelf puts the pet you last typed to first (or its birth, for one you have
+not talked to yet), so a pet at work doesn't jump ahead of the one you're
+working with; `o` sorts it by mood, repo or model instead, kept for next time.
 
 | key | on the shelf | on a pet's page |
 |---|---|---|
@@ -80,24 +102,40 @@ to message it.
 | `g` | the graveyard: recently closed sessions | |
 | `s` | what the pets would cost at API prices | |
 | `m` | your sessions' conversations with each other | |
+| `j` | go to the next pet that needs you, the longest stuck first (also `/tama-next`, from any session) | |
+| `t` | broadcast: one message from this session to every other running pet, or those of one repo | |
+| `o` | the pet talked to last first, or rows by mood, by repo, by model | |
 | `b` | | back |
 | `a` | | attach: go to its tmux pane, or open its background session |
-| `r` | | resurrect it (`claude --resume`) |
+| `r` | | resurrect it (`claude --bg --resume`, or in tmux) |
 | `e` | | rename it |
+| `p` | | pick its repo's colour (the repo that had it takes the old one) |
 | `c` | | copy its resume command |
-| `k` ×2 | | kill it |
+| `k` ×2 | | kill it (`claude stop` for a background one) |
+| `z` | | compact its context, once it is full past `contextAlertPercent` |
 | `x` ×2 | clean every closed pet's temp files (in the graveyard) | clean its temp files |
 
 Cleaning deletes only temp files: the transcript stays, so a pet can still be
 resurrected.
 
 When a pet needs you (a permission prompt), your other sessions show a toast
-and you get one desktop notification.
+and you get one desktop notification. When a pet's context fills past
+`contextAlertPercent`, they show a toast once.
+
+A new pet (`n`) takes a folder, and optionally a first prompt, a model and a
+git worktree of its own. Under the folder, it offers your pets' folders that
+hold what you typed, then the folders that start with it (`~/Doc` offers
+`~/Documents`); pressing one puts it in the field, and offers what is inside. Given a prompt, it gets to work in the background;
+without one, it opens for you to talk to.
+
+A pet's page shows its subagents however long ago they ran: the running ones
+first (all of them, however many), then the newest, `subagentsShown` (6) in all.
 
 When one session [messages another](https://code.claude.com/docs/en/cross-session-messaging),
 the sender throws a letter and the receiver catches it. Their messages show as
-conversations, a tab for each pair of sessions (`1`–`9` switch tabs): all of
-them with `m`, a pet's own on its page.
+conversations, a tab for each pair of sessions (`1`–`9` switch tabs): those
+between running sessions with `m`, a pet's own (a closed one's included) on its
+page.
 
 <img width="569" height="420" alt="image" src="https://github.com/user-attachments/assets/4fe743cc-335f-46bf-8e74-7c8426baa679" />
 
@@ -112,7 +150,10 @@ In `/config`, under the plugin:
 | `alerts` | toast and notification | or `toast`, or `off` |
 | `alertOnDone` | off | also alert when a pet finishes its turn |
 | `graveyardDays` | 5 | how far back the graveyard and spend page look |
-| `sadAfterMinutes` | 900 | when a waiting pet looks sad (`0`: never) |
+| `sleepyAfterHours` | 12 | when an idle pet looks sleepy (`0`: never); a pet stuck on you looks sad at once |
+| `contextAlertPercent` | 90 | when a pet's context is announced as full, and offers a compact (`0`: never) |
+| `subagentsShown` | 6 | how many subagents a pet's page shows |
+| `hatchIn` | background | where `n` and resurrect start a pet: `background` (`claude --bg`) or `tmux` |
 | `pollSeconds` | 4 | how often the shelf refreshes |
 | `diskWarnGb`, `diskAlarmGb` | 5, 10 | when the disk-use line turns orange, then red |
 
@@ -120,7 +161,7 @@ In `/config`, under the plugin:
 
 - Claude Code 2.1.300 or later
 - Linux or macOS
-- tmux, for attaching, hatching, resurrecting and killing (optional)
+- tmux, for attaching to a pet from the shelf (optional: without it, the attach command is copied)
 - git, for a pet's git activity (optional)
 
 ## Privacy
@@ -166,8 +207,12 @@ It writes no settings, start-up, build or instructions file.
   own cross-session messaging (`$.session.send`).
 - Renaming a *running* pet sends that session a message starting with
   `[tamaclaudchi rename]`; TamaClaudchi's own copy in that session takes it
-  and runs `/rename` there (see the hooks below). Those are the only messages
-  it sends, and only when you ask.
+  and runs `/rename` there (see the hooks below). A compact asked for a
+  running pet is sent the same way, as `[tamaclaudchi compact]`, and runs
+  `/compact` there.
+- A broadcast (`t`) sends the message you type, from this session, to each
+  pet it names before you send it. Those are the only messages it sends, and
+  only when you ask.
 - A desktop notification when a pet needs you (setting `alerts`), and text
   copied to your clipboard when you press `c` or a copy button.
 
@@ -176,32 +221,35 @@ process call, never through a shell with your input in the command:
 
 | program | when | why |
 |---|---|---|
+| `find -L <folder> -mindepth 1 -maxdepth 1 -type d` | typing in the new-pet form's folder field | offer the folders in the one you are typing in |
 | `sh -c <script>` with `find`, `stat`, `grep`, `awk`, `sed`, `tail`, `head`, `tr`, `du`, `xargs`, `id`, `date` | every poll | read the transcripts that changed and the disk use; each script is a fixed string in `hooks/register.tsx` (its shelf section), the paths passed as arguments |
 | `env TZ=UTC0 LC_ALL=C ps`, `kill -0` | every poll | whether a session's process is still alive (macOS; Linux reads `/proc`) |
 | `git` (read-only: `rev-parse`, `status`, `log`) | a pet's page | its git activity, with fsmonitor and signature programs turned off |
 | `tail` | a pet's page | its latest conversation |
 | `cat /etc/machine-id`, `readlink`, `ioreg` | once | which machine this is (above) |
 | `chmod 700` | once | keep `~/.claude/tamaclaudchi/` to your user |
-| `tmux` (`display-message`, `switch-client`, `select-window`, `select-pane`, `new-session`, `has-session`, `list-sessions`, `send-keys`, `list-panes`, `list-clients`, `kill-pane`, `kill-session`) | `a`, `n`, `r`, `k` | attach to a pet (from a background session, `ps` finds the pane its attach runs in), hatch one (`claude` in a new tmux session), resurrect one (`claude --resume <id>`), kill one |
-| `claude attach <job>` in a new tmux session (`bg-<job>`) | `j` on a background session | open a session started with `claude --bg` (outside tmux, the command is copied instead) |
+| `claude --bg` (with `--model`, `--worktree <name>`, `-- <prompt>` as you chose), `claude --bg --resume <id>` | `n`, `r` | hatch or resurrect a pet in the background, in its folder (setting `hatchIn`) |
+| `claude stop <job>` | `k` ×2 on a background pet | stop it as claude does: its conversation is kept |
+| `tmux` (`display-message`, `switch-client`, `select-window`, `select-pane`, `new-session`, `has-session`, `list-sessions`, `send-keys`, `list-panes`, `list-clients`, `kill-pane`, `kill-session`) | `a`, `j`, `n`, `r`, `k` | attach to a pet (from a background session, `ps` finds the pane its attach runs in), hatch one in tmux (`claude` typed into a new tmux session: `hatchIn` set to `tmux`, or a folder not trusted yet), resurrect one (`claude --resume <id>`), kill one |
+| `claude attach <job>` in a new tmux session (`bg-<job>`) | `a` on a background pet, `n`, `r` | open a session started with `claude --bg` (outside tmux, the command is copied instead) |
 | `kill -TERM`, then `kill -KILL` | `k` ×2 | kill a pet not in tmux, only once its process is sure to be that session |
 | `rm -rf` | `x` ×2 | clean a closed pet's temp folder (above) |
 | `sh -c 'printf … >> <transcript>'` | `e` on a closed pet | the rename line (above) |
 
 **Claude Code commands it runs.** `/rename <name>`, when you rename this
 session's pet, or when another session's TamaClaudchi asks this one to rename
-itself.
+itself; `/compact`, the same way, when you ask a pet to compact.
 
 **Its hooks.** It hooks no tool calls, network or process events.
 
 | hook | what it does |
 |---|---|
-| `session.start` | registers `/tama`, opens the pane on a wide terminal (setting `autoOpen`), starts the poll |
-| `command.run` (`/tama`) | opens the pane |
+| `session.start` | registers `/tama` and `/tama-next`, opens the pane on a wide terminal (setting `autoOpen`), starts the poll |
+| `command.run` (`/tama`, `/tama-next`) | opens the pane; goes to the next pet that needs you |
 | `ui.render` (its pane, and the prompt's footer) | draws the shelf, and the little faces right of the prompt |
 | `ui.message` | the pointer over a pet (from its own `hooks/pethit.tsx`): hover plays it, a click opens it |
 | `ui.close` (its pane) | remembers that the pane is closed |
-| `session.receive` | takes only a rename sent by TamaClaudchi itself in another of your sessions (above) and runs `/rename`; every other message passes through untouched |
+| `session.receive` | takes only a rename or a compact sent by TamaClaudchi itself in another of your sessions (above) and runs `/rename` or `/compact`; every other message passes through untouched |
 
 **Other plugins.** It calls none. The only plugin it answers is itself:
 TamaClaudchi in your other sessions.

@@ -6,6 +6,9 @@ import { GiB } from './format'
 
 export type Alerts = 'toast' | 'toast and notification' | 'off'
 
+/** Where a hatched or resurrected pet runs: a background session (claude --bg), or a tmux session of its own. */
+export type HatchIn = 'background' | 'tmux'
+
 export type Settings = {
   /** The pane opens by itself on a wide terminal when a session starts. */
   autoOpen: boolean
@@ -16,8 +19,14 @@ export type Settings = {
   pollMs: number
   /** How far back the graveyard (and the spend page) looks. */
   windowMs: number
-  /** A running pet waiting on you this long looks sad; 0 never. */
-  sadMs: number
+  /** A running pet idle this long looks sleepy; 0 never. */
+  sleepyMs: number
+  /** A running pet's context this full (percent) is announced, and its card offers a compact; 0 never. */
+  contextAlertPct: number
+  /** How many subagents a pet's page shows, the running ones first. */
+  agentsShown: number
+  /** Where a new or resurrected pet runs. */
+  hatchIn: HatchIn
   /** Claude's disk use turns orange, then red, past these (KiB). */
   diskWarnKb: number
   diskAlarmKb: number
@@ -29,7 +38,10 @@ const DEFAULTS: Settings = {
   alertOnDone: false,
   pollMs: 4000,
   windowMs: 5 * 86_400_000,
-  sadMs: 15 * 3_600_000,
+  sleepyMs: 12 * 3_600_000,
+  contextAlertPct: 90,
+  agentsShown: 6,
+  hatchIn: 'background',
   diskWarnKb: 5 * GiB,
   diskAlarmKb: 10 * GiB,
 }
@@ -51,7 +63,10 @@ export function applyOptions(o: PluginOptions = {}) {
     alertOnDone: typeof o.alertOnDone === 'boolean' ? o.alertOnDone : DEFAULTS.alertOnDone,
     pollMs: num(o.pollSeconds, 2, 60, DEFAULTS.pollMs / 1000) * 1000,
     windowMs: num(o.graveyardDays, 1, 30, DEFAULTS.windowMs / 86_400_000) * 86_400_000,
-    sadMs: num(o.sadAfterMinutes, 0, 24 * 60, DEFAULTS.sadMs / 60_000) * 60_000,
+    sleepyMs: num(o.sleepyAfterHours, 0, 24 * 7, DEFAULTS.sleepyMs / 3_600_000) * 3_600_000,
+    contextAlertPct: num(o.contextAlertPercent, 0, 100, DEFAULTS.contextAlertPct),
+    agentsShown: Math.round(num(o.subagentsShown, 1, 30, DEFAULTS.agentsShown)),
+    hatchIn: o.hatchIn === 'tmux' || o.hatchIn === 'background' ? o.hatchIn : DEFAULTS.hatchIn,
     diskWarnKb: num(o.diskWarnGb, 1, 10_000, DEFAULTS.diskWarnKb / GiB) * GiB,
     diskAlarmKb: num(o.diskAlarmGb, 1, 10_000, DEFAULTS.diskAlarmKb / GiB) * GiB,
   } satisfies Settings)

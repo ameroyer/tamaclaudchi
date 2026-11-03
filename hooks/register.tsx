@@ -9,16 +9,21 @@
 // (the buttons), footer, view (the pane), and register (the hooks).
 
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, RenderElement, RenderInput, Register } from 'claude-code'
+import type { EngineInterface, ProcessRunInit, RenderElement, RenderInput, Register } from 'claude-code'
 
-import type { TamaSession, Mood, Agent, GitInfo, GitTree, Live, Said, Spend, Step } from '../types'
+import type { TamaSession, Mood, Agent, GitInfo, GitTree, Grouping, Hatch, Live, Said, Spend, Step } from '../types'
 
 import { settings, windowDays, since, applyOptions } from './config'
-import { petName, isAsleep, isSad, parseSession, rederive, repoOf, shelfOrder, traceOf, withLive, petName as nameOf } from './sessions'
-import { mailFrames, outfits, petRest, ITEM_COUNT, itemKey, repoKey, SKIN_COUNT, stickySlots, GHOST_FRAME_MS, petFrames, agentOutfit, MODEL_SKIN, modelFamily, modelLabel, petPixels, petSmall, petSvg, type Slots, type Outfit } from './pets'
+import { COMPACT_AWK, compactAt, NO_WINDOWS, readCompacts, windowOf, withSettings, type CompactWindows, type WindowSettings } from './sessions'
+import { petName, isAsleep, isSad, isSleepy, parseSession, rederive, repoOf, shelfOrder, traceOf, withLive, petName as nameOf } from './sessions'
+import { chooseSlot, mailFrames, outfits, petRest, ITEM_COUNT, itemKey, repoKey, SKIN_COUNT, stickySlots, GHOST_FRAME_MS, petFrames, agentOutfit, MODEL_SKIN, modelFamily, modelLabel, petPixels, petSmall, petSvg, type Slots, type Outfit } from './pets'
+import { REPO_SKINS } from './sprites'
 import { lastDays, readCalls, spendOf, USAGE_AWK, dayOf, type Call } from './spend'
 import { lettersOf, MAIL_AWK, mailEdges, mailRead, PROMPT_AWK, readMail, postsOf, threadsOf, hasRecentMail, isFrom, type MailFact, type End, type Thread } from './mail'
 import { bytes, clip, vivid, ago, bytesShort, diskColor, GiB, lights, plural, tidy, tokenCount, usd, when, widest } from './format'
+
+/** The new-pet form, empty: this session's folder, no prompt, the default model, no worktree. */
+export const NO_HATCH: Hatch = { dir: null, prompt: '', model: null, worktree: false }
 
 // The values the mod reads or writes, one plugin and key each.
 const convo = atom({ plugin: 'tamaclaudchi', key: 'convo' } as const, null as { id: string; mtimeMs: number; said: Said[] } | null)
@@ -26,7 +31,7 @@ const me = atom({ plugin: 'tamaclaudchi', key: 'me' } as const, null as string |
 const git = atom({ plugin: 'tamaclaudchi', key: 'git' } as const, null as GitInfo | null)
 const selected = atom({ plugin: 'tamaclaudchi', key: 'selected' } as const, null as string | null)
 const sessions = atom({ plugin: 'tamaclaudchi', key: 'sessions' } as const, [] as TamaSession[])
-const agents = atom({ plugin: 'tamaclaudchi', key: 'agents' } as const, null as { id: string; list: Agent[] } | null)
+const agents = atom({ plugin: 'tamaclaudchi', key: 'agents' } as const, null as { id: string; list: Agent[]; total: number } | null)
 const agentPick = atom({ plugin: 'tamaclaudchi', key: 'agentPick' } as const, null as string | null)
 const disk = atom({ plugin: 'tamaclaudchi', key: 'disk' } as const, null as { tempDir: string; tempKb: number; logKb: number } | null)
 const trace = atom({ plugin: 'tamaclaudchi', key: 'trace' } as const, null as { id: string; mtimeMs: number; steps: Step[] } | null)
@@ -47,6 +52,14 @@ const version = atom({ plugin: 'tamaclaudchi', key: 'version' } as const, '')
 const graveQuery = atom({ plugin: 'tamaclaudchi', key: 'graveQuery' } as const, '')
 const showClosed = atom({ plugin: 'tamaclaudchi', key: 'showClosed' } as const, false)
 const isOpen = atom({ plugin: 'tamaclaudchi', key: 'isOpen' } as const, false)
+const groupBy = atom({ plugin: 'tamaclaudchi', key: 'groupBy' } as const, 'recent' as Grouping)
+const isBroadcasting = atom({ plugin: 'tamaclaudchi', key: 'isBroadcasting' } as const, false)
+const broadcastTo = atom({ plugin: 'tamaclaudchi', key: 'broadcastTo' } as const, 'all')
+const hatch = atom({ plugin: 'tamaclaudchi', key: 'hatch' } as const, NO_HATCH as Hatch)
+// the folders the new-pet form offers for what its folder field holds
+const folderHints = atom({ plugin: 'tamaclaudchi', key: 'folderHints' } as const, { for: null as string | null, dirs: [] as string[] })
+// the pet whose page shows the colours its repo can take
+const pickingColour = atom({ plugin: 'tamaclaudchi', key: 'pickingColour' } as const, null as string | null)
 
 // ─── players ─────────────────────────────────────────────────────────────────
 
@@ -56,6 +69,62 @@ const isOpen = atom({ plugin: 'tamaclaudchi', key: 'isOpen' } as const, false)
 // mid-hop.
 
 export const PANE = 'tamaclaudchi'
+
+// What narrows Claude Code's auto-compact window (sessions.ts), read at every
+// poll: for this user, and for each folder a pet runs in whose project settings set it.
+let windows: CompactWindows = NO_WINDOWS
+let windowsByCwd = new Map<string, CompactWindows>()
+
+/** Where Claude Code auto-compacts a pet, by the settings of the folder it runs in. */
+export const compactAtOf = (s: TamaSession) => compactAt(s.model, s.contextTokens, windowsByCwd.get(s.cwd) ?? windows)
+
+/** A pet's context lights: how far it has come to where Claude Code auto-compacts it. */
+export const ctxOf = (s: TamaSession) => lights(s.contextTokens, compactAtOf(s))
+
+/** A settings file's windows part, or null when it is missing or unreadable. */
+async function readSettings($: EngineInterface, path: string): Promise<WindowSettings | null> {
+  try {
+    const set: unknown = JSON.parse(await $.fs.read(path))
+    return set && typeof set === 'object' ? (set as WindowSettings) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The auto-compact windows set for this user (~/.claude/settings.json), and
+ * `CLAUDE_CODE_AUTO_COMPACT_WINDOW` as this session sees it (a session
+ * started with another value is not known here).
+ */
+async function readWindows($: EngineInterface, dir: string): Promise<CompactWindows> {
+  const env = windowOf(await $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW'))
+  return withSettings({ ...NO_WINDOWS, env }, await readSettings($, `${dir}/settings.json`))
+}
+
+/** Project settings are read again this often: they change by hand, rarely. */
+const PROJECT_SETTINGS_MS = 60_000
+// each folder's settings as last read, and when
+const projectSettings = new Map<string, { at: number; shared: WindowSettings | null; local: WindowSettings | null }>()
+
+/** The windows of each pet's folder that its `.claude/settings.json` or `settings.local.json` changes. */
+async function readProjectWindows($: EngineInterface, shelf: TamaSession[], now: number): Promise<Map<string, CompactWindows>> {
+  const out = new Map<string, CompactWindows>()
+  const cwds = new Set(shelf.map(s => s.cwd).filter(Boolean))
+  for (const cwd of projectSettings.keys()) if (!cwds.has(cwd)) projectSettings.delete(cwd)
+  for (const cwd of cwds) {
+    let set = projectSettings.get(cwd)
+    if (!set || now - set.at > PROJECT_SETTINGS_MS) {
+      set = { at: now, shared: await readSettings($, `${cwd}/.claude/settings.json`), local: await readSettings($, `${cwd}/.claude/settings.local.json`) }
+      projectSettings.set(cwd, set)
+    }
+    if (set.shared || set.local) out.set(cwd, withSettings(withSettings(windows, set.shared), set.local))
+  }
+  return out
+}
+
+/** How a pet is drawn now: faded asleep, haloed closed, sad stuck on you, sleepy idle for long. */
+export const lookOf = (s: TamaSession, now: number) =>
+  ({ faded: isAsleep(s, now), halo: !s.live, sad: isSad(s), sleepy: isSleepy(s, now, settings.sleepyMs) })
 
 export const playing = new Map<string, { cancel: () => void }>()
 
@@ -175,19 +244,28 @@ export async function share($: EngineInterface, paths: Paths, sessionsJson: stri
 // news of the others; the session reading for the machine alone raises the
 // native notification, so it comes once, not once per session.
 
-// Each running pet's mood at the last poll; null before the first, which
-// announces nothing (a pet already waiting when the session started is old news).
+// Each running pet's mood and context (percent full) at the last poll; null
+// before the first, which announces nothing (a pet already waiting when the
+// session started is old news).
 let before: Map<string, Mood> | null = null
+let fullBefore: Map<string, number> | null = null
 
-/** What changed since the last poll, as lines to announce. */
-export function news(shelf: TamaSession[], prev: Map<string, Mood> | null): { needs: TamaSession[]; done: TamaSession[] } {
-  const out = { needs: [] as TamaSession[], done: [] as TamaSession[] }
+/**
+ * What changed since the last poll, as lines to announce: a pet that started
+ * to need you, finished (when asked for), or filled its context past the
+ * setting's share (once, as it crosses it: a compact brings it back down).
+ */
+export function news(shelf: TamaSession[], prev: Map<string, Mood> | null, prevFull: Map<string, number> | null = null) {
+  const out = { needs: [] as TamaSession[], done: [] as TamaSession[], full: [] as TamaSession[] }
   if (!prev) return out
   for (const s of shelf) {
     if (!s.live) continue
     const was = prev.get(s.id)
     if (s.mood === 'needs' && was !== 'needs') out.needs.push(s)
     else if (settings.alertOnDone && s.mood === 'waiting' && was === 'busy') out.done.push(s)
+    const pct = ctxOf(s).pct
+    const wasPct = prevFull?.get(s.id)
+    if (settings.contextAlertPct > 0 && pct >= settings.contextAlertPct && wasPct !== undefined && wasPct < settings.contextAlertPct) out.full.push(s)
   }
   return out
 }
@@ -195,12 +273,14 @@ export function news(shelf: TamaSession[], prev: Map<string, Mood> | null): { ne
 const names = (list: TamaSession[]) => list.map(petName).join(', ')
 
 export async function announce($: EngineInterface, shelf: TamaSession[], me: string | null, isReader: boolean) {
-  const prev = before
+  const prev = before, prevFull = fullBefore
   before = new Map(shelf.filter(s => s.live).map(s => [s.id, s.mood]))
+  fullBefore = new Map(shelf.filter(s => s.live).map(s => [s.id, ctxOf(s).pct]))
   if (settings.alerts === 'off') return
-  const { needs, done } = news(shelf, prev)
+  const { needs, done, full } = news(shelf, prev, prevFull)
+  // your own prompt is in front of you here: the toasts are for the others
+  for (const s of full) if (s.id !== me) $.ui.toast(`◔ ${petName(s)} is ${ctxOf(s).pct}% of the way to auto-compacting: its card can compact it now`)
   if (!needs.length && !done.length) return
-  // your own prompt is in front of you here: the toast is for the others
   for (const s of needs) if (s.id !== me) $.ui.toast(`▲ ${petName(s)} needs you${s.live?.waitingFor ? `: ${s.live.waitingFor}` : ''}`)
   for (const s of done) if (s.id !== me) $.ui.toast(`✓ ${petName(s)} has finished and waits for you`)
   if (!isReader) return
@@ -249,7 +329,7 @@ export function playMail($: EngineInterface, shelf: TamaSession[], now: number) 
   const looks = outfits(shelf)
   for (const { s, role } of fresh) {
     const o = looks.get(s.id)!
-    const look = { faded: isAsleep(s, now), halo: !s.live, sad: isSad(s, now, settings.sadMs) }
+    const look = lookOf(s, now)
     // the card's own Raster; a pane that is closed or on another page denies the blit, which stops it
     playOnce($, `pet-${s.id}`, mailFrames(o, look, role), petRest(o, look).cells, MAIL_FRAME_MS)
   }
@@ -279,8 +359,6 @@ const CONVO_BYTES = 2 * 1024 * 1024
 /** A subagent counts as running while it has not finished and has written in this long. */
 const AGENT_RUNNING_MS = 10 * 60_000
 export const isAgentRunning = (a: Agent, now: number) => !a.isDone && now - a.mtimeMs < AGENT_RUNNING_MS
-/** A pet's page shows all its running subagents, and finished ones up to this many in all. */
-const AGENTS_SHOWN = 6
 /** How often disk use is measured again. */
 const DISK_MS = 60_000
 /** An unchanged shelf is drawn again this often all the same, so its ages move on. */
@@ -302,7 +380,7 @@ type Transcript = { path: string; id: string; mtimeMs: number; size: number; sta
 // the facts read so far, the API calls found, and up to which byte. A module
 // variable on purpose: a reload just reads them again.
 const cache = new Map<string, {
-  stamp: string; size: number; facts: Record<string, string>; calls: Map<string, Call>; mail: Map<string, MailFact>; session: TamaSession
+  stamp: string; size: number; facts: Record<string, string>; calls: Map<string, Call>; mail: Map<string, MailFact>; compacts: Map<string, number>; session: TamaSession
 }>()
 // The same for subagents' transcripts, whose API calls count to their pet.
 const subCache = new Map<string, { stamp: string; size: number; calls: Map<string, Call> }>()
@@ -330,7 +408,9 @@ fi`
 // custom title (a /rename, or an SDK run naming
 // itself); the newest ai-title (written early, out of reach of the tail); and
 // the last model (a tail full of one big tool result holds no reply, and would
-// hatch the pet back into an egg); a line per API call (spend.ts); each line
+// hatch the pet back into an egg); the last reply's context, for the same
+// reason (a prompt snapshot written after a reply can outgrow the tail
+// alone); a line per API call (spend.ts); each line
 // about a message to or from another session, and the time of the last prompt
 // you typed (mail.ts). Then the tail
 // itself. A busy transcript is so read only where it grew, not whole at every
@@ -345,9 +425,14 @@ const READ_SCRIPT = `while [ $# -gt 1 ]; do
   fi
   tail -c +$((off + 1)) "$f" | grep -o -E '"(customTitle|aiTitle)":"([^"\\\\]|\\\\.)*"|"model":"claude-[^"]*"' |
     awk -F'"' '{ last[$2] = $0 } END { for (k in last) print last[k] }'
+  tail -c +$((off + 1)) "$f" | grep '"type":"assistant"' | grep -v '"isSidechain":true' | grep '"usage"' | tail -n 1 |
+    awk '{ n = 0; split("input_tokens cache_read_input_tokens cache_creation_input_tokens", k, " ")
+      for (i = 1; i <= 3; i++) { p = index($0, "\\"" k[i] "\\":"); if (p) n += substr($0, p + length(k[i]) + 3) + 0 }
+      printf "\\"contextTokens\\":\\"%d\\"\\n", n }'
   tail -c +$((off + 1)) "$f" | awk '${MAIL_AWK}
 ${PROMPT_AWK}
-${USAGE_AWK}'
+${USAGE_AWK}
+${COMPACT_AWK}'
   printf '\\037\\n'
   tail -c ${TAIL_BYTES} "$f"
   printf '\\n'
@@ -371,10 +456,11 @@ const SUBAGENT_SCRIPT = `for d in "$@"; do
   done
 done`
 
-// The opened pet's subagents written to in the last half hour: for each, its
-// path, mtime, whether it has finished (as above), its model, and its
-// .meta.json (agent type and task description) on one line.
-const AGENTS_SCRIPT = `find "$1" -maxdepth 1 -name 'agent-*.jsonl' -mmin -30 2>/dev/null | while read -r f; do
+// The opened pet's subagents given (its newest, however old, and any written
+// lately enough to be at work still): for each, its path, mtime, whether it
+// has finished (as above), its model, and its .meta.json (agent type and task
+// description) on one line.
+const AGENTS_SCRIPT = `for f in "$@"; do
   printf '\\036%s\\n' "$f"
   date -r "$f" +%s
   tail -n 2 "$f" | grep -c -e '"stop_reason":"end_turn"' -e '"name":"SubagentHandback"'
@@ -657,7 +743,7 @@ async function readBatch($: EngineInterface, batch: Transcript[], now: number) {
   const byPath = new Map(batch.map(f => [f.path, f]))
   const res = await $.process.run(['sh', '-c', READ_SCRIPT, 'sh', ...batch.flatMap(f => [f.path, String(readFrom(cache.get(f.path), f))])], { timeoutMs: 120_000 })
     .catch((err: unknown) => {
-      $.ui.log(`tamaclaudchi: could not read ${batch.length} transcripts: ${String(err)}`)
+      logOnce($, `tamaclaudchi: could not read ${batch.length} transcripts: ${String(err)}`)
       return null
     })
   if (!res) return
@@ -679,20 +765,29 @@ async function readBatch($: EngineInterface, batch: Transcript[], now: number) {
       callsRead++
       const mail = isReadOn ? c.mail : new Map<string, MailFact>()
       readMail(head, mail)
+      const compacts = isReadOn ? c.compacts : new Map<string, number>()
+      readCompacts(head, compacts)
+      const dropped = [...compacts.values()]
       const born = Date.parse(facts.timestamp ?? '')
       const s = parseSession(f.id, chunk.slice(sep + 2), facts.aiTitle ?? null, f.mtimeMs, now, Number.isNaN(born) ? null : born)
       const model = s.model ?? facts.model ?? null
+      // the last reply's context, however far back: a big line after it (a
+      // prompt snapshot, a tool result) can push it out of the tail
+      const contextTokens = Number(facts.contextTokens) || s.contextTokens
       // its own folder, where it was born: what its colour and git go by
       const cwd = facts.cwd || s.cwd
       const looks = { cwd, repo: repoOf(cwd || f.id), bornBranch: facts.gitBranch || null }
       // your last prompt, however far back: the tail may hold none
       const lastPromptMs = Date.parse(facts.lastPrompt ?? '') || null
       cache.set(f.path, {
-        stamp: f.stamp, size: f.size, facts, calls, mail,
-        session: { ...s, ...looks, title: facts.customTitle ?? s.title, model, path: f.path, lastPromptMs },
+        stamp: f.stamp, size: f.size, facts, calls, mail, compacts,
+        session: {
+          ...s, ...looks, title: facts.customTitle ?? s.title, model, contextTokens, path: f.path, lastPromptMs,
+          compactions: dropped.length, droppedTokens: dropped.reduce((a, n) => a + n, 0),
+        },
       })
     } catch (err) {
-      $.ui.log(`tamaclaudchi: skipped ${f.path}: ${String(err)}`)
+      logOnce($, `tamaclaudchi: skipped ${f.path}: ${String(err)}`)
     }
   }
 }
@@ -730,11 +825,21 @@ export async function refresh($: EngineInterface, opts: { everyMs?: number } = {
   }
 }
 
+// An error said once in the conversation; again only in the debug log, so a
+// poll failing every few seconds does not fill the transcript with rows.
+const said = new Set<string>()
+function logOnce($: EngineInterface, text: string) {
+  const key = text.slice(0, 200)
+  $.ui.log(text, said.has(key) ? { to: 'debug' } : undefined)
+  said.add(key)
+}
+
 /** One pass of refresh. */
 async function readOnce($: EngineInterface, opts: { everyMs?: number }) {
   try {
     const now = await $.clock.now()
     const dir = await claudeDir($)
+    windows = await readWindows($, dir)
     const mine = await read($, me)
     const everyMs = opts.everyMs ?? settings.pollMs
     const paths = sharedPaths(dir, (await machineOf($)).key)
@@ -748,6 +853,7 @@ async function readOnce($: EngineInterface, opts: { everyMs?: number }) {
     }
     isLeading = !other && !!mine
     const { shelf, used } = other ? { shelf: other.sessions, used: other.disk } : await readShelf($, dir, now)
+    windowsByCwd = await readProjectWindows($, shelf, now)
     const text = JSON.stringify(shelf)
     // until this session knows its id, it reads for itself, holds no lease and
     // raises no notification; the lease is stamped when renewed, as a cold
@@ -775,7 +881,7 @@ async function readOnce($: EngineInterface, opts: { everyMs?: number }) {
     if (opened) await readMailText($, [opened])
     else if (await read($, showMailroom)) await readMailText($, shelf)
   } catch (err) {
-    $.ui.log(`tamaclaudchi: could not read the shelf: ${String(err)}`)
+    logOnce($, `tamaclaudchi: could not read the shelf: ${String(err)}`)
   }
 }
 
@@ -905,6 +1011,15 @@ async function readSubagentCalls($: EngineInterface, shelf: TamaSession[]): Prom
 
 const SLOTS_KEY = 'looks-v1'
 
+/** Gives a pet's repo the colour you chose, for every pet of it; the repo that had that colour takes its old one. */
+async function chooseColour($: EngineInterface, s: TamaSession, slot: number) {
+  const kept = ((await $.store.get(SLOTS_KEY).catch(() => undefined)) ?? {}) as Partial<Slots>
+  const repo = chooseSlot(kept.repo ?? {}, repoKey(s), slot, await $.clock.now())
+  await $.store.set(SLOTS_KEY, { repo, item: kept.item ?? {} }).catch(() => undefined)
+  await update($, pickingColour, () => null)
+  void refresh($)
+}
+
 /**
  * Each repo's colour and each branch's item, kept once given: in the store, so
  * every session on this machine draws a pet alike, and a newcomer takes a free
@@ -995,18 +1110,28 @@ export async function readGit($: EngineInterface, s: TamaSession) {
   if ((await read($, selected)) === s.id) await update($, git, () => info)
 }
 
-/** The opened pet's subagents: the running ones first, then the newest. */
 // The opened pet's subagents' files as last read: unchanged, they are not read again.
 let agentsSeen = { id: '', stamp: '' }
 
+/**
+ * The opened pet's subagents, however long ago they ran: every running one
+ * first, then the newest, as many as the setting shows. Only those are read:
+ * a pet may have launched hundreds.
+ */
 export async function readAgents($: EngineInterface, s: TamaSession) {
   if (!s.path) return
   const dir = `${dirOf(s)}/subagents`
-  const stamp = (await $.fs.list(dir).catch(() => [])).map(f => `${f.name}:${f.mtimeMs}:${f.size}`).join('|')
+  const listed = await $.fs.list(dir).catch(() => [])
+  const stamp = `${settings.agentsShown}|${listed.map(f => `${f.name}:${f.mtimeMs}:${f.size}`).join('|')}`
   if (agentsSeen.id === s.id && agentsSeen.stamp === stamp && (await read($, agents))?.id === s.id) return
   agentsSeen = { id: s.id, stamp }
-  const res = await $.process.run(['sh', '-c', AGENTS_SCRIPT, 'sh', dir]).catch(() => null)
   const now = await $.clock.now()
+  const files = listed.filter(f => f.kind === 'file' && /^agent-[\w-]+\.jsonl$/.test(f.name)).sort((a, b) => b.mtimeMs - a.mtimeMs)
+  // the newest, and any that wrote lately enough to be at work still: one waiting on a long
+  // tool may have written before several that have since finished, and the running ones
+  // are shown first (only reading tells which run); the cap below holds either way
+  const picked = files.filter((f, i) => i < settings.agentsShown || now - f.mtimeMs < AGENT_RUNNING_MS)
+  const res = picked.length ? await $.process.run(['sh', '-c', AGENTS_SCRIPT, 'sh', ...picked.map(f => `${dir}/${f.name}`)]).catch(() => null) : null
   const list: Agent[] = []
   for (const chunk of res?.stdout.split('\x1e').slice(1) ?? []) {
     const [path = '', mtime = '0', done = '0', modelLine = '', metaLine = ''] = chunk.split('\n')
@@ -1021,19 +1146,20 @@ export async function readAgents($: EngineInterface, s: TamaSession) {
   }
   const running = (a: Agent) => isAgentRunning(a, now)
   list.sort((a, b) => Number(running(b)) - Number(running(a)) || b.mtimeMs - a.mtimeMs)
-  // every running one, then the newest finished ones while there is room
-  const atWork = list.filter(running).length
-  const shown = list.slice(0, Math.max(atWork, AGENTS_SHOWN))
+  // every running one, then the newest finished ones, while there is room
+  const shown = list.slice(0, Math.max(settings.agentsShown, list.filter(running).length))
   if ((await read($, selected)) !== s.id) return
-  await update($, agents, () => ({ id: s.id, list: shown }))
+  await update($, agents, () => ({ id: s.id, list: shown, total: files.length }))
   // the opened agent wrote more: read its trace again
   const pick = await read($, agentPick)
   const opened = pick ? shown.find(a => a.id === pick) : undefined
   if (opened && (await read($, trace))?.mtimeMs !== opened.mtimeMs) await readTrace($, opened)
 }
 
-// The lines about messages in each transcript given, from its last few MB.
-const MAIL_SCRIPT = `for f in "$@"; do tail -c ${4 * CONVO_BYTES} "$f" | awk '${MAIL_AWK}'; done`
+// The lines about messages in each transcript given, however far back: a fixed-string
+// grep finds the few among them in a whole transcript of many MB at once, the awk
+// pass (mail.ts) keeps those that are a message's.
+const MAIL_SCRIPT = `for f in "$@"; do grep -F -e '"kind":"peer"' -e '"name":"SendMessage"' -e '"msg_id"' "$f" | awk '${MAIL_AWK}'; done`
 /** How many transcripts the messages page reads the texts from. */
 const MAIL_FILES = 30
 /** How much of a message a page shows. */
@@ -1090,7 +1216,7 @@ const tmuxPane = (target: string) => target.split('.').pop()!
  * Runs a command; one that cannot start at all (no tmux installed) reads as
  * a failed run, so every caller's fallback still happens.
  */
-async function run($: EngineInterface, argv: string[], opts: { timeoutMs?: number } = {}) {
+async function run($: EngineInterface, argv: string[], opts: ProcessRunInit = {}) {
   return $.process.run(argv, opts).catch((err: unknown) => (
     { exitCode: 127, stdout: '', stderr: String(err), isStdoutTruncated: false, isStderrTruncated: false }
   ))
@@ -1122,7 +1248,7 @@ export async function hover($: EngineInterface, id: string, isOn: boolean, key =
   if (!s || hovers.get(key) !== turn) return
   const o = outfits(list).get(id)!
   const now = Date.now()
-  const look = { faded: isAsleep(s, now), halo: !s.live, sad: isSad(s, now, settings.sadMs) }
+  const look = lookOf(s, now)
   if (!isOn) {
     await $.ui.blit({ requestId: PANE, key, cells: petRest(o, look).cells })
     return
@@ -1143,6 +1269,7 @@ export async function hover($: EngineInterface, id: string, isOn: boolean, key =
 export async function select($: EngineInterface, id: string | null) {
   await update($, armed, () => null)
   await update($, renaming, () => null)
+  await update($, pickingColour, () => null)
   await update($, agentPick, () => null)
   await update($, showGit, () => false)
   await update($, showConvo, () => false)
@@ -1307,18 +1434,49 @@ async function copyText($: EngineInterface, text: string, what: string) {
   else $.ui.toast(`${what} could not be copied (${copied.reason}): ${text}`)
 }
 
+/** The job a `claude --bg` names in what it prints (`backgrounded · 1a2b3c4d · its name`); null for none. */
+export const jobOf = (printed: string) => /backgrounded · ([\w-]+)/.exec(printed)?.[1] ?? null
+
+/** The first line of what a command said, for a toast. */
+const firstLine = (text: string) => text.trim().split('\n').filter(l => !/^Starting background service/.test(l))[0]?.trim() ?? ''
+
 /**
- * Brings a closed session back: `claude --resume` in a tmux session of its
- * own, in its folder, and goes there. Without tmux, the resume command is copied.
+ * Starts `claude --bg` with `args` in `dir`: the job it printed, or why it
+ * would not start (a folder not trusted yet, no `claude` on the PATH…). It
+ * returns as soon as the session is up, but is given time for a cold start.
+ */
+async function startBackground($: EngineInterface, dir: string, args: string[]): Promise<{ job: string } | { why: string }> {
+  const made = await run($, ['claude', '--bg', ...args], { cwd: dir, timeoutMs: 60_000 })
+  const job = made.exitCode === 0 ? jobOf(`${made.stdout}\n${made.stderr}`) : null
+  return job ? { job } : { why: firstLine(made.stderr) || firstLine(made.stdout) || `claude --bg ended with code ${made.exitCode}` }
+}
+
+/**
+ * Brings a closed session back, in its folder: `claude --bg --resume` (the
+ * default), opened at once; or `claude --resume` in a tmux session of its own,
+ * which is also where a background resume that fails falls back to. Without
+ * either, the resume command is copied.
  */
 export async function resurrect($: EngineInterface, s: TamaSession) {
-  // it may be back already, since the shelf was read: go to it instead
+  // it may be back already, since the shelf was read: go to it instead, as a
+  // resume of a running session would start a copy of it
   const now = (await readLive($)).get(s.id)
   if (now) {
     if (now.tmux) await jumpTo($, now.tmux, now.name ?? nameOf(s))
     else if (now.job && !now.isElsewhere) await attachJob($, now.job, now.name ?? nameOf(s))
     else $.ui.toast(`${nameOf(s)} is running already${now.isElsewhere ? ', on another machine' : ''}.`)
     return
+  }
+  let why = ''
+  if (settings.hatchIn === 'background') {
+    const bg = await startBackground($, s.cwd, ['--resume', s.id])
+    if ('job' in bg) {
+      $.ui.toast(`${WING} ${nameOf(s)} is back, in the background (${bg.job}).`)
+      await attachJob($, bg.job, nameOf(s))
+      void refresh($)
+      return
+    }
+    why = `It could not come back in the background (${bg.why}): `
   }
   // tmux takes neither '.' nor ':' in a session name
   const name = `${s.repo.replace(/[.:\s]/g, '-').slice(0, 24)}-${s.id.slice(0, 4)}`
@@ -1327,21 +1485,73 @@ export async function resurrect($: EngineInterface, s: TamaSession) {
   if (made.exitCode === 0) {
     const target = made.stdout.trim()
     if (target) await jumpTo($, target, name)
-    $.ui.toast(`${WING} ${nameOf(s)} is back, in tmux session ${name}.`)
+    $.ui.toast(`${why}${WING} ${nameOf(s)} is back, in tmux session ${name}.`)
     void refresh($)
   } else if ((await run($, ['tmux', 'has-session', '-t', `=${name}`])).exitCode === 0) {
     await jumpTo($, `${name}:`, name) // brought back already: go to it
   } else {
+    if (why) $.ui.toast(`${why}nor in tmux.`)
     await copyResume($, s)
   }
 }
 
+/** The models a new pet can be hatched on, as `claude --model` takes them; null is the default. */
+export const HATCH_MODELS: (string | null)[] = [null, 'fable', 'opus', 'sonnet', 'haiku']
+
 /**
- * Hatches a pet: `claude` in a new detached tmux session in `input`, named
- * after the folder (with -2, -3… when taken), then goes there. Typed into the
- * shell rather than run as the session's command, so the pane stays when it exits.
+ * What `claude` is started with for a new pet: its model, a git worktree of
+ * its own (named, as `-w` would otherwise take the prompt for its name), and
+ * a first prompt, after `--` so one starting with a dash stays a prompt.
  */
-export async function spawnPet($: EngineInterface, input: string) {
+export function hatchArgs(h: { model: string | null; worktree: string | null; prompt: string }): string[] {
+  return [
+    ...(h.model ? ['--model', h.model] : []),
+    ...(h.worktree ? ['--worktree', h.worktree] : []),
+    ...(h.prompt.trim() ? ['--', h.prompt.trim()] : []),
+  ]
+}
+
+/**
+ * Hatches a pet in `input` with the form's model, worktree and first prompt:
+ * `claude --bg` (the default), or `claude` in a tmux session of its own. A
+ * background pet given a prompt gets to work where it is; one without is
+ * opened, so you can type to it. A folder not trusted yet only an interactive
+ * claude can ask about, so it hatches in tmux instead.
+ */
+/** How many folders the new-pet form offers at once. */
+const HINTS_SHOWN = 6
+
+/**
+ * Folders for what the new-pet form's folder field holds: the running and
+ * recent pets' own folders that hold the text, then those it names the start
+ * of (`~/Doc` offers ~/Documents; `~/Documents/` the folders in it).
+ */
+export async function suggestFolders($: EngineInterface, typed: string, pets: TamaSession[]) {
+  const home = (await $.env.get('HOME')) ?? ''
+  const short = (d: string) => (home && (d === home || d.startsWith(`${home}/`)) ? `~${d.slice(home.length)}` : d)
+  const text = typed.trim()
+  const full = text.replace(/^~(?=\/|$)/, home)
+  const q = text.toLowerCase()
+  // the pets' folders, the one talked to last first
+  const known = [...new Set([...pets].sort((a, b) => talkedAt(b) - talkedAt(a)).map(s => s.cwd).filter(Boolean))]
+    .map(short).filter(d => !q || d.toLowerCase().includes(q) || d.toLowerCase().includes(full.toLowerCase()))
+  let found: string[] = []
+  if (full.startsWith('/')) {
+    const cut = full.lastIndexOf('/')
+    const parent = full.slice(0, cut) || '/', start = full.slice(cut + 1).toLowerCase()
+    const res = await $.process.run(['find', '-L', parent, '-mindepth', '1', '-maxdepth', '1', '-type', 'd'], { timeoutMs: 5000 }).catch(() => null)
+    found = (res?.stdout ?? '').split('\n').filter(Boolean)
+      .filter(d => { const base = d.slice(d.lastIndexOf('/') + 1).toLowerCase(); return base.startsWith(start) && (start.startsWith('.') || !base.startsWith('.')) })
+      .sort((a, b) => a.localeCompare(b)).map(short)
+  }
+  const dirs = [...new Set([...known, ...found])].filter(d => d !== text && `${d}/` !== text).slice(0, HINTS_SHOWN)
+  // a later keystroke may have asked again meanwhile: the latest wins
+  if ((await read($, hatch)).dir === typed || (typed === '' && (await read($, hatch)).dir === null)) await update($, folderHints, () => ({ for: typed, dirs }))
+}
+
+export async function spawnPet($: EngineInterface, input: string, typed: Partial<Hatch> = {}) {
+  // what was just typed, which the form's state may not hold yet
+  const form = { ...(await read($, hatch)), ...typed }
   const home = (await $.env.get('HOME')) ?? ''
   const dir = input.trim().replace(/^~(?=\/|$)/, home) || home
   if ((await $.fs.stat(dir).catch(() => null))?.kind !== 'dir') {
@@ -1349,6 +1559,19 @@ export async function spawnPet($: EngineInterface, input: string) {
     return
   }
   const base = (dir.split('/').filter(Boolean).pop() ?? '').replace(/[^\w-]/g, '-') || 'pet'
+  const args = hatchArgs({ ...form, worktree: form.worktree ? `${base.slice(0, 24)}-${Date.now().toString(36).slice(-5)}` : null })
+  let why = ''
+  if (settings.hatchIn === 'background') {
+    const bg = await startBackground($, dir, args)
+    if ('job' in bg) {
+      await closeHatch($)
+      if (form.prompt.trim()) $.ui.toast(`A new pet is hatching in the background (${bg.job}), on your prompt. Its card attaches to it.`)
+      else await attachJob($, bg.job, base)
+      void refresh($)
+      return
+    }
+    why = `claude --bg could not start it (${bg.why}), so `
+  }
   const listed = await run($, ['tmux', 'list-sessions', '-F', '#{session_name}'])
   const taken = new Set(listed.exitCode === 0 ? listed.stdout.split('\n') : [])
   let name = base
@@ -1356,14 +1579,21 @@ export async function spawnPet($: EngineInterface, input: string) {
   const made = await run($, ['tmux', 'new-session', '-d', '-P', '-F', TMUX_TARGET, '-s', name, '-c', dir])
   const target = made.stdout.trim()
   if (made.exitCode !== 0 || !target) {
-    $.ui.toast(`tmux could not start a session: ${made.stderr.trim() || 'is tmux installed?'}`)
+    $.ui.toast(why ? `Could not hatch it: ${why.replace(/, so $/, '')}, nor in tmux.` : `tmux could not start a session: ${made.stderr.trim() || 'is tmux installed?'}`)
     return
   }
-  await run($, ['tmux', 'send-keys', '-t', tmuxPane(target), 'claude', 'Enter'])
-  await update($, isSpawning, () => false)
+  // typed into the shell rather than run as the session's command, so the pane stays when it exits
+  await run($, ['tmux', 'send-keys', '-t', tmuxPane(target), ['claude', ...args.map(shellQuote)].join(' '), 'Enter'])
+  await closeHatch($)
   await jumpTo($, target, name)
-  $.ui.toast(`A new pet is hatching in tmux session ${name}.`)
+  $.ui.toast(`${why}${why ? 'a' : 'A'} new pet is hatching in tmux session ${name}.`)
   void refresh($)
+}
+
+/** Closes the new-pet form, emptied for next time. */
+async function closeHatch($: EngineInterface) {
+  await update($, isSpawning, () => false)
+  await update($, hatch, () => NO_HATCH)
 }
 
 /**
@@ -1371,11 +1601,24 @@ export async function spawnPet($: EngineInterface, input: string) {
  * else only its pane (the session's other windows are not the pet's to take),
  * and the process itself as a backstop. Never this session's own pet.
  */
+// The pets being killed now: a kill takes seconds (a stop, then a grace
+// period), and a press meanwhile must not start a second one on a pet going.
+const killing = new Set<string>()
+
 export async function killPet($: EngineInterface, s: TamaSession) {
   await update($, armed, () => null)
   // never this session's own pet, nor one on another machine, whose pid means nothing here
-  if (!s.live || s.live.isElsewhere || s.id === (await read($, me))) return
-  const { pid, procStart, tmux } = s.live
+  if (!s.live || s.live.isElsewhere || s.id === (await read($, me)) || killing.has(s.id)) return
+  killing.add(s.id)
+  try {
+    await killNow($, s, s.live)
+  } finally {
+    killing.delete(s.id)
+  }
+}
+
+async function killNow($: EngineInterface, s: TamaSession, live: Live) {
+  const { pid, procStart, tmux, job } = live
   // a claude started from this session's own shell shares its pane: taking
   // that pane down would take this session with it
   if (tmux && tmuxPane(tmux) === (await $.env.get('TMUX_PANE'))) {
@@ -1383,6 +1626,14 @@ export async function killPet($: EngineInterface, s: TamaSession) {
     return
   }
   const done: string[] = []
+  // a background session is stopped as `claude stop` does it: its
+  // conversation kept, and the attaches showing it closed with it
+  if (job) {
+    const stopped = await run($, ['claude', 'stop', job], { timeoutMs: 30_000 })
+    if (stopped.exitCode === 0) done.push(`its background session (${job})`)
+    // the tmux session opened to attach to it, which an older claude may leave behind
+    if ((await run($, ['tmux', 'has-session', '-t', `=bg-${job}`])).exitCode === 0) await run($, ['tmux', 'kill-session', '-t', `=bg-${job}`])
+  }
   // its pane, if it still runs this pet: a pane id is only good within one
   // tmux server, and a restarted server gives the old numbers out again
   if (tmux && (await paneRuns($, tmuxPane(tmux), pid))) {
@@ -1418,7 +1669,18 @@ export async function killPet($: EngineInterface, s: TamaSession) {
     done.push('its process')
   }
   if (!done.length) {
-    $.ui.toast(`Could not kill ${nameOf(s)}: its tmux pane is not where the registry says, and its process cannot be told apart from a newer one.`)
+    // nothing left to stop: it ended on its own, or a kill before this one got it
+    forgetProcesses()
+    if (!(await isRunning($, pid, procStart))) {
+      $.ui.toast(`${nameOf(s)} has already ended.`)
+      await select($, null)
+      void refresh($)
+      return
+    }
+    const why = job ? `claude stop ${job} failed`
+      : tmux ? 'its tmux pane is not where the registry says'
+      : 'it runs in no tmux pane or background session this mod can close'
+    $.ui.toast(`Could not kill ${nameOf(s)}: ${why}, and its process cannot be told apart from a newer one.`)
     return
   }
   $.ui.toast(`✝ ${nameOf(s)} is gone: killed ${done.join(' and ')}.`)
@@ -1593,6 +1855,100 @@ export async function message($: EngineInterface, s: TamaSession, text: string) 
   $.ui.toast(sent.isDelivered ? `Sent to ${nameOf(s)}.` : `Not sent: ${sent.reason}`)
 }
 
+/** What a message asking a pet to compact its context is: its own copy of the mod takes it, its model never reads it. */
+export const COMPACT_TAG = '[tamaclaudchi compact]'
+
+/** A running pet here whose context is as full as the alert's setting says, between turns or stuck on you. */
+export const canCompact = (s: TamaSession) =>
+  !!s.live && !s.live.isElsewhere && s.mood !== 'busy' && settings.contextAlertPct > 0
+  && ctxOf(s).pct >= settings.contextAlertPct
+
+/**
+ * Has a pet compact its context, as `/compact` does, once its turn is over:
+ * this session runs it itself; another is asked to, its own copy of the mod
+ * running it there, as for a rename.
+ */
+export async function compactPet($: EngineInterface, s: TamaSession) {
+  if (!s.live || s.live.isElsewhere) return
+  if (s.id === (await read($, me))) {
+    // queued for when this session is idle: not awaited, as that may be a while
+    void $.command.run({ command: 'compact' }).catch(err => $.ui.toast(`Could not compact: ${String(err)}`))
+  } else if (!(await runsMod($, s))) {
+    const copied = await $.ui.copy({ text: '/compact' })
+    $.ui.toast(`${nameOf(s)} does not run TamaClaudchi (started before it was installed?): run /compact in it${copied.isCopied ? ', on your clipboard' : ''}.`)
+    return
+  } else {
+    const sent = await $.session.send({ to: { sessionId: s.id }, text: COMPACT_TAG })
+    if (!sent.isDelivered) {
+      $.ui.toast(`Could not ask ${nameOf(s)} to compact: ${sent.reason}`)
+      return
+    }
+  }
+  $.ui.toast(`⇲ ${nameOf(s)} compacts its context once its turn is over.`)
+}
+
+/** The pets stuck on you that `next` goes through, the longest stuck first: running here, and not this session. */
+export const needing = (list: TamaSession[], mine: string | null) =>
+  list.filter(s => s.live && !s.live.isElsewhere && s.mood === 'needs' && s.id !== mine).sort((a, b) => a.mtimeMs - b.mtimeMs)
+
+// The pet `next` last went to: pressed again, it goes on to the one after.
+let wentNext: string | null = null
+
+/**
+ * Goes to the next pet stuck on you, the longest stuck first: attaches to it,
+ * or opens its page where it cannot be attached to. Says where it went.
+ */
+export async function jumpNext($: EngineInterface): Promise<string> {
+  const queue = needing(await read($, sessions), await read($, me))
+  if (!queue.length) {
+    $.ui.toast('No pet needs you right now.')
+    return 'No pet needs you right now.'
+  }
+  const s = queue[(queue.findIndex(x => x.id === wentNext) + 1) % queue.length]!
+  wentNext = s.id
+  const said = `${nameOf(s)} needs you${s.live?.waitingFor ? `: ${s.live.waitingFor}` : ''}${queue.length > 1 ? ` (${queue.indexOf(s) + 1} of ${queue.length})` : ''}`
+  if (canJump(s.live)) {
+    await jump($, s)
+  } else {
+    await select($, s.id)
+    if (!(await read($, isOpen))) await open($, true)
+    $.ui.toast(`▲ ${said}: it cannot be attached to from here, so here is its page.`)
+  }
+  return `▲ ${said}`
+}
+
+/** Who a broadcast from this session reaches: every other running pet here (`all`), or those of one repo (`repo:<name>`). */
+export const audience = (list: TamaSession[], mine: string | null, to: string) =>
+  list.filter(s => s.live && !s.live.isElsewhere && s.id !== mine && (to === 'all' || to === `repo:${s.repo}`))
+
+/**
+ * Sends one message from this session to every pet of the broadcast's
+ * audience, one by one, as the message box on a pet's page would; says who
+ * got it, and who did not.
+ */
+export async function broadcast($: EngineInterface, text: string) {
+  const body = text.trim()
+  if (!body) return
+  const list = await read($, sessions)
+  const mine = await read($, me)
+  const to = audience(list, mine, await read($, broadcastTo))
+  if (!to.length) {
+    $.ui.toast('No other running pet here to tell.')
+    return
+  }
+  const got: TamaSession[] = []
+  const missed: string[] = []
+  for (const s of to) {
+    const sent = await $.session.send({ to: { sessionId: s.id }, text: body }).catch((err: unknown) => ({ isDelivered: false as const, reason: String(err) }))
+    if (sent.isDelivered) got.push(s)
+    else missed.push(`${nameOf(s)} (${sent.reason})`)
+  }
+  await markSeen($, got.map(s => s.id))
+  await update($, isBroadcasting, () => false)
+  const self = list.find(s => s.id === mine)
+  $.ui.toast(`📣 From ${self ? nameOf(self) : 'this session'} to ${plural(got.length, 'pet')}${got.length ? `: ${names(got)}` : ''}.${missed.length ? ` Not sent to ${missed.join(', ')}.` : ''}`)
+}
+
 // ─── footer ──────────────────────────────────────────────────────────────────
 
 // The footer: at the right of the prompt's footer line, every running pet as
@@ -1675,8 +2031,9 @@ const AGENT_W = 18
 const CARD_DISK_KB = 100 * 1024
 /** How many steps of a subagent's trace are drawn, the newest. */
 const STEPS_SHOWN = 200
-/** Cards and conversation tabs opened by a digit key, the first so many. */
-const DIGITS = 9
+/** Cards and conversation tabs opened by a digit key, the first so many: 1 to 9, then 0. */
+const DIGITS = 10
+const digitKey = (n: number) => String(n % 10)
 /** The spend page's top pets and repos. */
 const SPEND_TOP = 8
 /** A card's height on the terminal: a row of buttons, the pet, six rows of text, the border. */
@@ -1722,6 +2079,7 @@ const GRAVE = '🪦' // the graveyard
 /** The background pill's fill, on a pet's page. */
 const PILL_BG = '#d9d6dc'
 const LETTER = '💌' // a message between sessions (✉ is text by default)
+const MEGAPHONE = '📣' // a broadcast from this session to the others
 /** How many messages the messages page and a pet's page draw, the newest. */
 const POSTS_SHOWN = 40
 
@@ -1738,7 +2096,8 @@ export async function renderPane($: EngineInterface, e: PaneEvent) {
   const agentId = await read($, agentPick)
   const known = await read($, agents)
   const agent = agentId && known?.id === chosen.id ? known.list.find(a => a.id === agentId) : undefined
-  return agent ? agentPage($, e, v, chosen, agent) : petPage($, e, v, chosen, known?.id === chosen.id ? known.list : [])
+  const crew = known?.id === chosen.id ? known : null
+  return agent ? agentPage($, e, v, chosen, agent) : petPage($, e, v, chosen, crew?.list ?? [], crew?.total ?? 0)
 }
 
 /** What both pages draw a pet with. */
@@ -1748,7 +2107,7 @@ function kit($: EngineInterface, e: PaneEvent, v: View) {
   // terminal's palette, which washes pastels out to white), with an invisible
   // Client over it that reports hover and clicks.
   // `hitId` names the pointer layer: a pet's id, or `agent:<id>` for a subagent's
-  const art = (o: Outfit, key: string, hitId: string, look: { faded: boolean; halo?: boolean; sad?: boolean }, alt: string, isSmall = false) => {
+  const art = (o: Outfit, key: string, hitId: string, look: { faded: boolean; halo?: boolean; sad?: boolean; sleepy?: boolean }, alt: string, isSmall = false) => {
     if (e.surface === 'terminal') {
       const { Raster, Client } = $.ui.resolve(e)
       const rest = isSmall ? petSmall(o, look) : petRest(o, look)
@@ -1769,13 +2128,14 @@ function kit($: EngineInterface, e: PaneEvent, v: View) {
   }
   // a card's pet opens its page; the big one on that page only plays (`page:<id>`)
   const pet = (s: TamaSession, key: string, isPage = false) =>
-    art(v.looks.get(s.id)!, key, isPage ? `page:${s.id}` : s.id, { faded: isAsleep(s, v.now), halo: !s.live, sad: isSad(s, v.now, settings.sadMs) }, `${modelLabel(s.model)} pet`)
+    art(v.looks.get(s.id)!, key, isPage ? `page:${s.id}` : s.id, lookOf(s, v.now), `${modelLabel(s.model)} pet`)
   const agentPet = (s: TamaSession, a: Agent, key: string) =>
     art(agentOutfit(v.looks.get(s.id)!, a), key, `agent:${a.id}`, { faded: a.isDone }, `${a.type} agent`, true)
   const modelPill = (s: TamaSession) => <Text bold color={MODEL_SKIN[modelFamily(s.model)]!.body}>{modelLabel(s.model)}</Text>
-  const ctx = (s: TamaSession) => {
-    const l = lights(s.contextTokens)
-    return <Text><Text color={l.color}>{l.on}</Text><Text dimColor>{l.off} {l.pct}% ctx</Text></Text>
+  // on a card, without the word: `Sonnet 5.5 ●●●●● 100%` is all its 22 cells can hold
+  const ctx = (s: TamaSession, isCard = false) => {
+    const l = ctxOf(s)
+    return <Text><Text color={l.color}>{l.on}</Text><Text dimColor>{l.off} {l.pct}{isCard ? '%' : '% ctx'}</Text></Text>
   }
   // A section's title: larger where the surface has sizes; the terminal has
   // one size, so there it is underlined, bold and cyan instead.
@@ -1802,6 +2162,61 @@ export function searchGraves(closed: TamaSession[], query: string): { found: Tam
   const found = closed.filter(s =>
     [s.title ?? '', s.repo, s.branch ?? '', s.cwd].some(field => (re ? re.test(field) : field.toLowerCase().includes(q))))
   return { found, isRegexp: re !== null }
+}
+
+/** The shelf's groupings, in the order `o` goes through them, and what its button says of each. */
+export const GROUPINGS: { by: Grouping; label: string }[] = [
+  { by: 'recent', label: 'last talked to first' }, { by: 'mood', label: 'by mood' }, { by: 'repo', label: 'by repo' }, { by: 'model', label: 'by model' },
+]
+const FAMILIES = ['fable', 'opus', 'sonnet', 'haiku', 'other']
+const latest = (pets: TamaSession[]) => Math.max(...pets.map(s => s.mtimeMs))
+
+/**
+ * When you last talked to a pet: the last prompt you typed to it, or its
+ * birth; one never talked to, when it last wrote. Unlike when it last wrote,
+ * a pet at work does not move for it.
+ */
+export const talkedAt = (s: TamaSession) => Math.max(s.lastPromptMs ?? 0, s.bornMs ?? 0) || s.mtimeMs
+
+/**
+ * The running pets in rows: all in one row, the one you talked to last first
+ * (the default), or by mood (working, stuck on you, idle), by repo (the one
+ * at work latest first), by model. Within a row, the latest at work first,
+ * and your own pet ahead of them but in the first.
+ */
+export function groupPets(alive: TamaSession[], mine: string | null, by: Grouping, looks: Map<string, Outfit>): { label: string; color: string; pets: TamaSession[] }[] {
+  const order = (pets: TamaSession[]) => [...pets].sort((a, b) => Number(b.id === mine) - Number(a.id === mine) || b.mtimeMs - a.mtimeMs)
+  if (by === 'recent') return alive.length ? [{ label: 'Last talked to first', color: ACCENT, pets: [...alive].sort((a, b) => talkedAt(b) - talkedAt(a) || b.mtimeMs - a.mtimeMs) }] : []
+  if (by === 'repo') {
+    const repos = new Map<string, TamaSession[]>()
+    for (const s of alive) repos.set(s.repo, [...(repos.get(s.repo) ?? []), s])
+    return [...repos].sort(([, a], [, b]) => latest(b) - latest(a))
+      .map(([repo, pets]) => ({ label: repo, color: looks.get(pets[0]!.id)?.skin.body ?? GREY, pets: order(pets) }))
+  }
+  if (by === 'model') {
+    return FAMILIES.map(f => ({ label: f === 'other' ? 'Eggs' : MODEL_SKIN[f]!.label, color: MODEL_SKIN[f]!.body, pets: order(alive.filter(s => modelFamily(s.model) === f)) }))
+      .filter(g => g.pets.length)
+  }
+  return GROUPS.map(g => ({ label: g.label, color: g.color, pets: order(alive.filter(s => g.moods.includes(s.mood))) })).filter(g => g.pets.length)
+}
+
+/** Moves the shelf on to its next grouping, kept for the sessions to come. */
+async function nextGrouping($: EngineInterface) {
+  const now = await read($, groupBy)
+  const at = GROUPINGS.findIndex(g => g.by === now)
+  const by = GROUPINGS[(at + 1) % GROUPINGS.length]!.by
+  await update($, groupBy, () => by)
+  await $.store.set(GROUPING_KEY, by).catch(() => undefined)
+}
+const GROUPING_KEY = 'group-by'
+
+/**
+ * The messages the messages page shows: between two sessions both still
+ * running. A closed pet's are on its own page.
+ */
+export const livePosts = (list: TamaSession[]) => {
+  const running = new Set(list.filter(s => s.live).map(s => s.id))
+  return postsOf(list).filter(p => !!p.from && !!p.to && running.has(p.from) && running.has(p.to))
 }
 
 /** What a pet spent over the window, by its days. */
@@ -1831,14 +2246,13 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
   const cleanKb = toClean.reduce((n, s) => n + (s.disk?.tempKb ?? 0), 0)
   const today = dayOf(v.now)
   const spentToday = v.list.reduce((n, s) => n + (s.spend?.days[today] ?? 0), 0)
-  const posts = postsOf(v.list).length
-  // your own pet first in its row, in its cyan frame
+  const posts = livePosts(v.list).length
+  const by = await read($, groupBy)
+  const stuck = needing(v.list, v.mine)
+  const isTelling = await read($, isBroadcasting)
   const groups = isGraveOpen
     ? [{ label: `${GRAVE} Graveyard`, color: GREY, pets: found.slice(0, GRAVES_SHOWN) }]
-    : GROUPS.map(g => ({
-      ...g,
-      pets: alive.filter(s => g.moods.includes(s.mood)).sort((a, b) => Number(b.id === v.mine) - Number(a.id === v.mine)),
-    })).filter(g => g.pets.length)
+    : groupPets(alive, v.mine, by, v.looks)
   // the first pets on the page, in reading order, open with a digit
   const digit = new Map(groups.flatMap(g => g.pets).slice(0, DIGITS).map((s, i) => [s.id, i + 1]))
   const perRow = Math.max(1, Math.floor(v.cols / CARD_W))
@@ -1863,18 +2277,18 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
       <Text dimColor>{plural(alive.length, 'running pet')} across {plural(folders, 'folder')}</Text>
       {isGraveOpen
         ? <Button key="graveyard" hotkey="g" plain label="← back to the shelf" onPress={openGraves(false)} />
-        : spawning && Input ? (
-          <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
-            <Text bold color={ACCENT}>+ a new pet, in its own tmux session</Text>
-            <Input key="spawn-dir" label="folder" value={self?.cwd ?? '~'} autoFocus submitLabel="hatch" onSubmit={dir => void spawnPet($, dir)} />
-            <Button key="spawn-cancel" plain dimColor label="cancel" onPress={() => void update($, isSpawning, () => false)} />
-          </Box>
-        ) : (
+        : spawning && Input ? hatchForm($, e, v, self, await read($, hatch), await read($, folderHints))
+        : isTelling && Input ? broadcastBox($, e, v, self, await read($, broadcastTo), digit)
+        : (
           <Box columnGap={2} flexWrap="wrap">
-            <Button key="spawn" hotkey="n" plain label="+ new pet" onPress={() => void update($, isSpawning, () => true)} />
+            <Button key="spawn" hotkey="n" plain label="+ new pet" onPress={() => { void update($, isSpawning, () => true); void suggestFolders($, '', v.list) }} />
             {closed.length ? <Button key="graveyard" hotkey="g" plain label={`${GRAVE} graveyard · ${closed.length} closed`} onPress={openGraves(true)} /> : null}
             <Button key="spend" hotkey="s" plain label={`$ spend · ${usd(spentToday)} today`} onPress={() => void update($, showSpend, () => true)} />
             {posts ? <Button key="mailroom" hotkey="m" plain label={`${LETTER} ${plural(posts, 'message')}`} onPress={() => void openMailroom($, true)} /> : null}
+            {/* the pets stuck on you, one press each, the longest stuck first */}
+            {stuck.length ? <Button key="next" hotkey="j" plain label={`▲ next that needs you · ${stuck.length}`} onPress={() => void jumpNext($)} /> : null}
+            {audience(v.list, v.mine, 'all').length && Input ? <Button key="broadcast" hotkey="t" plain label={`${MEGAPHONE} broadcast`} onPress={() => void update($, isBroadcasting, () => true)} /> : null}
+            <Button key="group" hotkey="o" plain label={`⇅ ${GROUPINGS.find(g => g.by === by)?.label ?? GROUPINGS[0]!.label}`} onPress={() => void nextGrouping($)} />
           </Box>
         )}
       <Text>{mod ? <Text color={HEADER}>v{mod} </Text> : null}<Text dimColor>Legend: body = repo · hat = model · item = branch</Text></Text>
@@ -1902,7 +2316,7 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
         <Box key={`group-${g.label}`} flexDirection="column" marginTop={1}>
           <Text bold color={g.color}>{g.label} <Text dimColor>· {g.pets.length}</Text></Text>
           {rowsOf(g.pets).map((row, i) => (
-            <Box key={`row-${g.label}-${i}`} flexDirection="row">{row.map(s => card($, e, v, s, digit.get(s.id)))}</Box>
+            <Box key={`row-${g.label}-${i}`} flexDirection="row">{row.map(s => card($, e, v, s, digit.get(s.id), by !== 'mood'))}</Box>
           ))}
         </Box>
       ))}
@@ -1910,19 +2324,120 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
   )
 }
 
+/** A choice among a few, as radio buttons: `● chosen  ○ another`. */
+function choices($: EngineInterface, e: PaneEvent, key: string, options: { value: string; label: string }[], chosen: string, choose: (value: string) => void) {
+  const { Box, Text, Button } = $.ui.resolve(e)
+  return (
+    <Box flexWrap="wrap" columnGap={2}>
+      {options.map(o => (
+        <Button key={`${key}-${o.value}`.slice(0, 64)} plain onPress={() => choose(o.value)}>
+          {o.value === chosen
+            ? <Text bold color={ACCENT}>● {clip(o.label, TAB_W)}</Text>
+            : <Text dimColor>○ {clip(o.label, TAB_W)}</Text>}
+        </Button>
+      ))}
+    </Box>
+  )
+}
+
+/**
+ * The new-pet form: its folder, a first prompt, its model and whether it gets
+ * a worktree of its own. Enter in either field hatches it; where it runs is a
+ * setting (in the background unless it says tmux).
+ */
+function hatchForm($: EngineInterface, e: PaneEvent, v: View, self: TamaSession | undefined, form: Hatch, hints: { for: string | null; dirs: string[] }) {
+  const { Box, Text, Button } = $.ui.resolve(e)
+  const Input = e.surface !== 'mobile' ? $.ui.resolve(e).Input : null
+  if (!Input) return null
+  const dir = form.dir ?? self?.cwd ?? '~'
+  const set = (change: Partial<Hatch>) => void update($, hatch, f => ({ ...f, ...change }))
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
+      <Text bold color={ACCENT}>+ a new pet, {settings.hatchIn === 'tmux' ? 'in its own tmux session' : 'in the background (claude --bg)'}</Text>
+      <Input key="spawn-dir" label="folder" value={dir} autoFocus submitLabel="hatch"
+        onInput={d => { set({ dir: d }); void suggestFolders($, d, v.list) }} onSubmit={d => void spawnPet($, d)} />
+      {/* folders for what it holds: a press puts one in the field, to hatch there or look inside */}
+      {hints.dirs.length ? (
+        <Box flexWrap="wrap" columnGap={2}>
+          <Text dimColor>try</Text>
+          {hints.dirs.map(d => (
+            <Button key={`hint-${d}`.slice(0, 64)} plain onPress={() => { set({ dir: `${d}/` }); void suggestFolders($, `${d}/`, v.list) }}>
+              <Text color={ACCENT}>{clip(d, TAB_W)}</Text>
+            </Button>
+          ))}
+        </Box>
+      ) : null}
+      <Input key="spawn-prompt" label="first prompt" value={form.prompt} placeholder="optional: what it should start on" submitLabel="hatch"
+        onInput={prompt => set({ prompt })} onSubmit={prompt => void spawnPet($, dir, { prompt })} />
+      <Box gap={1}>
+        <Text dimColor>model</Text>
+        {choices($, e, 'spawn-model', HATCH_MODELS.map(m => ({ value: m ?? '', label: m ?? 'default' })), form.model ?? '', m => set({ model: m || null }))}
+      </Box>
+      <Button key="spawn-worktree" plain label={`${form.worktree ? '[x]' : '[ ]'} in a git worktree of its own`} onPress={() => set({ worktree: !form.worktree })} />
+      <Text dimColor wrap="wrap">
+        {form.prompt.trim() && settings.hatchIn !== 'tmux' ? 'It starts on your prompt where it is; its card attaches to it.' : 'Opened once it hatches, for you to talk to.'}
+        {' '}A folder not trusted yet hatches in tmux, to ask you.
+      </Text>
+      <Button key="spawn-cancel" plain dimColor label="cancel" onPress={() => void closeHatch($)} />
+    </Box>
+  )
+}
+
+/**
+ * The broadcast box: one message from this session to every other running pet
+ * here, or to those of one repo, each named before it goes, so who tells whom
+ * is never in doubt.
+ */
+function broadcastBox($: EngineInterface, e: PaneEvent, v: View, self: TamaSession | undefined, to: string, digit: Map<string, number>) {
+  const { Box, Text, Button } = $.ui.resolve(e)
+  const Input = e.surface !== 'mobile' ? $.ui.resolve(e).Input : null
+  if (!Input) return null
+  const everyone = audience(v.list, v.mine, 'all')
+  const repos = [...new Set(everyone.map(s => s.repo))].sort()
+  const reached = audience(v.list, v.mine, to)
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
+      <Text bold color={ACCENT}>
+        {MEGAPHONE} Broadcast from <Text color={ME}>{self ? clip(petName(self), 30) : 'this session'}</Text><Text dimColor> (★ you, this session)</Text>
+      </Text>
+      <Box gap={1}>
+        <Text dimColor>to</Text>
+        {choices($, e, 'broadcast-to', [{ value: 'all', label: `every running pet · ${everyone.length}` },
+          ...repos.map(r => ({ value: `repo:${r}`, label: `${r} · ${everyone.filter(s => s.repo === r).length}` }))], to,
+          t => void update($, broadcastTo, () => t))}
+      </Box>
+      <Text wrap="wrap">
+        <Text dimColor>→ </Text>
+        {/* each pet as its card names it: its number on the shelf, then its name */}
+        {reached.length ? reached.map((s, i) => (
+          <Text key={`bc-name-${s.id}`}>
+            <Text dimColor>{i ? ', ' : ''}{digit.has(s.id) ? `${digit.get(s.id)}: ` : ''}</Text>
+            <Text color={v.looks.get(s.id)?.skin.body}>{clip(petName(s), 30)}</Text>
+          </Text>
+        ))
+          : <Text dimColor>no running pet there</Text>}
+      </Text>
+      <Input key="broadcast-text" label="›" placeholder="your message" autoFocus submitLabel="send"
+        onSubmit={text => void broadcast($, text)} />
+      <Button key="broadcast-cancel" plain dimColor label="cancel" onPress={() => void update($, isBroadcasting, () => false)} />
+    </Box>
+  )
+}
+
 /** What `armed` holds while the graveyard's clean-all waits for its second press. */
 const CLEAN_ALL = '*graves'
 
-/** One pet's card on the shelf; `digit` opens it from the keyboard. */
-function card($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?: number) {
+/** One pet's card on the shelf; `digit` opens it from the keyboard; `showMood` when its row does not say it. */
+function card($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?: number, showMood = false) {
   const { Box, Text, Button } = $.ui.resolve(e)
   const k = kit($, e, v)
   const o = v.looks.get(s.id)!
   const isMe = s.id === v.mine
   const isTerminal = e.surface === 'terminal'
   const size = s.disk ? s.disk.tempKb + s.disk.logKb : 0
-  const sad = isSad(s, v.now, settings.sadMs)
+  const pct = ctxOf(s).pct
   const isMailed = hasRecentMail(s, v.now, v.seen[s.id])
+  const name = petName(s), nameW = CARD_W - 2 - (digit ? 3 : 0)
   return (
     // The card lights with every card of its repo while any is hovered; the
     // hovered one alone also gets the double outline, drawn over its border by
@@ -1951,18 +2466,29 @@ function card($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?:
         </Box>
         {k.pet(s, `pet-${s.id}`)}
         {/* its name opens it: by Tab and Enter, its digit, or a click (the pet takes one too, on the terminal) */}
-        <Box width={CARD_W - 2} justifyContent="center">
-          <Button key={`name-${s.id}`} plain hotkey={digit ? String(digit) : undefined} onPress={() => void select($, s.id)}>
+        <Box key={`name-box-${s.id}`} width={CARD_W - 2} justifyContent="center" position="relative">
+          <Button key={`name-${s.id}`} plain hotkey={digit ? digitKey(digit) : undefined} onPress={() => void select($, s.id)}>
             {/* one line, cut by hand: a button's text wraps; the room left by `1: ` */}
-            <Text bold dimColor={!s.live} color={isMe ? ME : undefined}>{clip(petName(s), CARD_W - 2 - (digit ? 3 : 0))}</Text>
+            <Text bold dimColor={!s.live} color={isMe ? ME : undefined}>{clip(name, nameW)}</Text>
           </Button>
+          {/* a name cut short shows whole under it while hovered, over the repo's line; a surface with no hover never shows it */}
+          {name.length > nameW ? (
+            <Box position="absolute" top={1} left={0} display="none" hover={{ display: 'flex' }}>
+              <Text bold backgroundColor={PILL_BG} color="#3b3340"> {name} </Text>
+            </Box>
+          ) : null}
         </Box>
         <Text color={o.skin.body} wrap="truncate">{s.repo}</Text>
         <Text dimColor wrap="truncate">⎇ {s.branch ?? '—'}</Text>
-        <Box gap={1}>{k.modelPill(s)}{k.ctx(s)}</Box>
-        {/* the shelf's rows already say working or idle; a pet left waiting long says so */}
+        <Box gap={1}>{k.modelPill(s)}{k.ctx(s, true)}</Box>
+        {/* what it is busy with, what to do about it (a full context), or how long
+            it has been stuck on you or left idle; working or waiting for you, when
+            the shelf's rows are not by mood to say it */}
         {s.subagents ? <Text color={MOOD.busy.border!}>{plural(s.subagents, 'subagent')} working</Text>
-          : sad ? <Text color={MOOD.waiting.border!} wrap="truncate">sad · left waiting {ago(v.now - s.mtimeMs).replace(' ago', '')}</Text>
+          : canCompact(s) ? <Button key={`compact-${s.id}`} plain label={`⇲ compact · ${pct}% full`} onPress={() => void compactPet($, s)} />
+          : isSad(s) ? <Text color={MOOD.needs.border!} wrap="truncate">sad · stuck on you {ago(v.now - s.mtimeMs).replace(' ago', '')}</Text>
+          : isSleepy(s, v.now, settings.sleepyMs) ? <Text dimColor wrap="truncate">sleepy · idle {ago(v.now - s.mtimeMs).replace(' ago', '')}</Text>
+          : showMood && s.live && (s.mood === 'busy' || s.mood === 'waiting') ? <Text color={MOOD[s.mood].border!} wrap="truncate">{MOOD[s.mood].label}</Text>
           : s.subagentsEver ? <Text dimColor>{plural(s.subagentsEver, 'subagent')} launched</Text>
           : <Text> </Text>}
         <Text dimColor>{s.bornMs ? `born ${ago(v.now - s.bornMs)}` : 'born ?'}</Text>
@@ -2053,33 +2579,28 @@ const endColor = (v: View, end: End) => (end.id ? v.looks.get(end.id)?.skin.body
 /** A tab's label, in cells at most. */
 const TAB_W = 34
 
-/** A tab, filled: the open one the headers' cyan with dark text, the others dark grey with light text. */
-const TAB_OPEN = { fg: '#1e1b24', bg: HEADER }
-const TAB_SHUT = { fg: '#d8d4de', bg: '#4a4458' }
-
 /**
- * The conversations' tabs, standing on a rule of the open one's colour, as a
- * tab strip: each a filled block, the first nine opened with a digit. There
- * is no tab element: each tab is a button.
+ * The conversations' tabs, as a line of labels over a thin rule: the open one
+ * bold, underlined and in the headers' cyan, the others dim; the first ten
+ * opened with a digit (the tenth with 0). There is no tab element: each tab is a button.
  */
 function mailTabs($: EngineInterface, e: PaneEvent, v: View, threads: Thread[], open: Thread, label: (t: Thread) => string) {
   const { Box, Text, Button } = $.ui.resolve(e)
   return (
     <Box flexDirection="column">
-      <Box flexWrap="wrap" columnGap={1}>
+      <Box flexWrap="wrap" columnGap={3}>
         {threads.map((t, i) => {
           const isOpen = t.key === open.key
-          const look = isOpen ? TAB_OPEN : TAB_SHUT
+          // the button shows its digit itself
+          const text = `${clip(label(t), TAB_W)} · ${t.posts.length}`
           return (
-            <Button key={`mail-tab-${t.key}`} plain hotkey={i < DIGITS ? String(i + 1) : undefined} onPress={() => void openTab($, t.key)}>
-              <Text bold={isOpen} color={look.fg} backgroundColor={look.bg}>
-                {' '}{i < DIGITS ? `${i + 1} ` : ''}{clip(label(t), TAB_W)} ({t.posts.length}){' '}
-              </Text>
+            <Button key={`mail-tab-${t.key}`} plain hotkey={i < DIGITS ? digitKey(i + 1) : undefined} onPress={() => void openTab($, t.key)}>
+              {isOpen ? <Text bold underline color={HEADER}>{text}</Text> : <Text dimColor>{text}</Text>}
             </Button>
           )
         })}
       </Box>
-      <Text color={TAB_OPEN.bg} wrap="truncate">{'━'.repeat(v.cols)}</Text>
+      <Text dimColor wrap="truncate">{'─'.repeat(v.cols)}</Text>
     </Box>
   )
 }
@@ -2130,7 +2651,7 @@ const openThread = (threads: Thread[], tab: string | null) => threads.find(t => 
 async function mailroomPage($: EngineInterface, e: PaneEvent, v: View) {
   const { Box, Text, Button } = $.ui.resolve(e)
   const k = kit($, e, v)
-  const threads = threadsOf(postsOf(v.list))
+  const threads = threadsOf(livePosts(v.list))
   const open = openThread(threads, await read($, mailTab))
   const texts = await told($, v.list)
   return (
@@ -2139,7 +2660,7 @@ async function mailroomPage($: EngineInterface, e: PaneEvent, v: View) {
         {k.brand}
         <Button key="mailroom-back" hotkey="m" plain label="← back to the shelf" autoFocus onPress={() => void openMailroom($, false)} />
       </Box>
-      <Text dimColor wrap="wrap">What your sessions told each other {since()}: a tab per conversation, the latest first.</Text>
+      <Text dimColor wrap="wrap">What your running sessions told each other {since()}: a tab per conversation, the latest first. A closed pet's are on its own page.</Text>
       {!open ? <Text dimColor>No messages {since()}.</Text> : (
         <Box flexDirection="column" marginTop={1}>
           {mailTabs($, e, v, threads, open, t => `${clip(endName(v, t.ends[0]), 16)} ↔ ${clip(endName(v, t.ends[1]), 16)}`)}
@@ -2157,7 +2678,7 @@ async function mailroomPage($: EngineInterface, e: PaneEvent, v: View) {
 }
 
 /** One pet, opened: its actions, its card, its subagents, its git, and the conversation. */
-async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, crew: Agent[]) {
+async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, crew: Agent[], launched: number) {
   const { Box, Text, Button } = $.ui.resolve(e)
   const Input = e.surface !== 'mobile' ? $.ui.resolve(e).Input : null
   const k = kit($, e, v)
@@ -2167,6 +2688,7 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
   const info = gitRead?.id === s.id && Array.isArray(gitRead.trees) ? gitRead : null
   const armedId = await read($, armed)
   const isRenaming = (await read($, renaming)) === s.id
+  const isPicking = (await read($, pickingColour)) === s.id
   const talk = await read($, convo)
   const isGitOpen = await read($, showGit)
   const isConvoOpen = await read($, showConvo)
@@ -2183,8 +2705,8 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
   const said = talk?.id === s.id ? talk.said : s.recent
   const tmux = s.live?.tmux ? tmuxSession(s.live.tmux) : null
   const mood = !s.live ? { ...MOOD.idle, label: '✝ closed' }
+    : isSleepy(s, v.now, settings.sleepyMs) ? { ...MOOD.idle, label: `zzz sleepy: idle for ${ago(v.now - s.mtimeMs).replace(' ago', '')}` }
     : isAsleep(s, v.now) ? { ...MOOD.idle, label: 'zzz asleep' }
-    : isSad(s, v.now, settings.sadMs) ? { ...MOOD.waiting, label: `sad: waiting on you for ${ago(v.now - s.mtimeMs).replace(' ago', '')}` }
     : s.mood === 'needs' && s.live.waitingFor ? { ...MOOD.needs, label: `▲ needs you: ${s.live.waitingFor}` }
     : MOOD[s.mood]
   const petTint = MODEL_SKIN[modelFamily(s.model)]!.body
@@ -2206,9 +2728,12 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
         {s.live ? null : <Button key="resurrect" hotkey="r" plain label={`${WING} resurrect`} onPress={() => void resurrect($, s)} />}
         <Button key="resume" hotkey="c" plain label="copy resume command" onPress={() => void copyResume($, s)} />
         {Input && !s.live?.isElsewhere ? <Button key="rename" hotkey="e" plain label="✎ rename" onPress={() => void startRename($, s.id)} /> : null}
+        <Button key="colour" hotkey="p" plain label={isPicking ? '◐ keep its colour' : '◐ colour'}
+          onPress={() => void update($, pickingColour, () => (isPicking ? null : s.id))} />
+        {canCompact(s) ? <Button key="compact" hotkey="z" plain label={`⇲ compact · ${ctxOf(s).pct}% full`} onPress={() => void compactPet($, s)} /> : null}
         {s.live && !s.live.isElsewhere && s.id !== v.mine ? (
           armedId === s.id
-            ? <Button key="kill" hotkey="k" plain label={`✕ press again: kill it${tmux ? ' and its tmux pane' : ''}`} onPress={() => void killPet($, s)} />
+            ? <Button key="kill" hotkey="k" plain label={`✕ press again: ${s.live.job ? 'stop its background session' : `kill it${tmux ? ' and its tmux pane' : ''}`}`} onPress={() => void killPet($, s)} />
             : <Button key="kill" hotkey="k" plain dimColor label="✕ kill" onPress={() => void update($, armed, () => s.id)} />
         ) : null}
         {/* a closed pet's temp folder: scratch files and task output, often big */}
@@ -2229,6 +2754,18 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
           </Box>
         ) : <Text bold wrap="truncate">{petName(s)}</Text>}
         <Text color={o.skin.body} wrap="truncate">{s.repo}{s.branch ? ` · ${s.branch}` : ''}</Text>
+        {isPicking ? (
+          <Box flexDirection="column" alignItems="center">
+            <Text dimColor>the colour of every pet of {s.repo}:</Text>
+            <Box columnGap={1}>
+              {REPO_SKINS.map((skin, i) => (
+                <Button key={`colour-${i}`} plain onPress={() => void chooseColour($, s, i)}>
+                  <Text color={skin.body}>{i === s.skinSlot ? '◆' : '■'}</Text>
+                </Button>
+              ))}
+            </Box>
+          </Box>
+        ) : null}
         <Box gap={1}>
           {k.modelPill(s)}{k.ctx(s)}<Text color={mood.fg} backgroundColor={mood.bg}> {mood.label} </Text>
           {/* started with claude --bg: no terminal of its own, attach opens one */}
@@ -2236,6 +2773,12 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
         </Box>
         <Text dimColor wrap="truncate-start">{s.cwd}</Text>
         <Text dimColor>{lifeLine}</Text>
+        {/* the lights' figures: how far it has come to where Claude Code auto-compacts it */}
+        {s.contextTokens ? <Text dimColor>context: {tokenCount(s.contextTokens)} of the {tokenCount(compactAtOf(s))} where Claude Code auto-compacts it</Text> : null}
+        {/* what the compactions took out, back: the conversation since it was born */}
+        {s.compactions ? (
+          <Text dimColor>whole conversation: about {tokenCount(s.contextTokens + s.droppedTokens)}, compacted {s.compactions === 1 ? 'once' : `${s.compactions} times`}</Text>
+        ) : null}
         {s.disk ? (
           <Text dimColor>
             on disk: <Text bold dimColor={false} color={diskColor(s.disk.tempKb + s.disk.logKb, 1, 5)}>{bytes(s.disk.tempKb + s.disk.logKb)}</Text>
@@ -2253,7 +2796,7 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
       </Box>
       {crew.length ? (
         <Box flexDirection="column">
-          {k.header('Subagents', `${crew.filter(a => isAgentRunning(a, v.now)).length} working · click one for its trace`)}
+          {k.header('Subagents', `${crew.filter(a => isAgentRunning(a, v.now)).length} working${launched > crew.length ? ` · the newest ${crew.length} of ${launched}` : ''} · click one for its trace`)}
           <Box flexDirection="row" flexWrap="wrap">
             {crew.map(a => {
               const running = isAgentRunning(a, v.now)
@@ -2438,6 +2981,7 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'tama', description: 'Open the TamaClaudchi shelf: every session, across folders, as a pet' })
+    await $.command.register({ name: 'tama-next', description: 'Go to the next pet that needs you (a permission prompt), the longest stuck first' })
     await update($, me, () => null)
     // The host keeps these across a reload of the mod, when an older version
     // may have written them in another shape: start again from the shelf.
@@ -2451,7 +2995,12 @@ export const register: Register = (on, options) => {
     await update($, showConvo, () => false)
     await update($, armed, () => null)
     await update($, isSpawning, () => false)
+    await update($, hatch, () => NO_HATCH)
+    await update($, isBroadcasting, () => false)
+    await update($, broadcastTo, () => 'all')
     await update($, renaming, () => null)
+    await update($, pickingColour, () => null)
+    await update($, folderHints, () => ({ for: null, dirs: [] }))
     await update($, showClosed, () => false)
     await update($, showSpend, () => false)
     await update($, showMail, () => false)
@@ -2462,6 +3011,9 @@ export const register: Register = (on, options) => {
     await update($, graveQuery, () => '')
     await update($, disk, () => null)
     await update($, sessions, () => [])
+    // the shelf's grouping, as last chosen on this machine
+    const by = await $.store.get(GROUPING_KEY).catch(() => undefined)
+    await update($, groupBy, () => (GROUPINGS.some(g => g.by === by) ? by as Grouping : 'recent'))
     void $.session.id().then(async id => {
       await update($, me, () => id)
       if (id) await markRunning($, id)
@@ -2502,6 +3054,9 @@ export const register: Register = (on, options) => {
     return { text: 'TamaClaudchi shelf opened.' }
   })
 
+  // from any session: straight to the next pet stuck on you, the pane closed or not
+  on('command.run', { command: 'tama-next' }, async $ => ({ text: await jumpNext($) }))
+
   // the pointer layer over each pet (pethit.tsx): hover plays it, a click opens it
   on('ui.message', async ($, e) => {
     if (!e.module.endsWith('pethit.tsx')) return {}
@@ -2526,10 +3081,18 @@ export const register: Register = (on, options) => {
     return {}
   })
 
-  // another session's shelf asks this one's pet to rename itself (the actions section)
+  // another session's shelf asks this one's pet to rename itself, or to
+  // compact its context (the actions section)
   on('session.receive', async ($, e, next) => {
+    if (e.origin.kind !== 'peer' || e.origin.plugin !== 'tamaclaudchi') return next(e)
+    // found anywhere in it, as a rename's tag is: the text may come wrapped
+    if (e.text.includes(COMPACT_TAG)) {
+      // queued for when the session is idle, as a rename is
+      void $.command.run({ command: 'compact' }).catch(err => $.ui.log(`tamaclaudchi: could not compact: ${String(err)}`))
+      return { consumed: 'a compact asked from another session\'s shelf' }
+    }
     const at = e.text.indexOf(RENAME_TAG)
-    if (e.origin.kind !== 'peer' || e.origin.plugin !== 'tamaclaudchi' || at < 0) return next(e)
+    if (at < 0) return next(e)
     const name = cleanName(e.text.slice(at + RENAME_TAG.length).split('\n')[0]!)
     // queued for when the session is idle: not awaited, as this delivery waits on the hook
     if (name) void $.command.run({ command: 'rename', args: name }).catch(err => $.ui.log(`tamaclaudchi: could not rename: ${String(err)}`))

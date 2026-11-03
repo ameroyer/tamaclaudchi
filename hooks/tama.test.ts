@@ -3,13 +3,13 @@ import type { EngineInterface } from 'claude-code'
 
 import type { TamaSession } from '../types'
 
-import { ANIM_H, modelLabel, outfits, stickySlots, PET_H, PET_W, petCells, petFrames, petPixels, petRest } from './pets'
-import { isSad, parseSession, rederive, withLive } from './sessions'
+import { ANIM_H, chooseSlot, modelLabel, outfits, stickySlots, PET_H, PET_W, petCells, petFrames, petPixels, petRest } from './pets'
+import { compactAt, isSad, isSleepy, parseSession, readCompacts, rederive, windowOf, withLive, withSettings } from './sessions'
 import { costOf } from './pricing'
 import { vivid } from './format'
 import { MODEL_SKIN, REPO_SKINS } from './sprites'
 import { dayOf, readCalls, spendOf, type Call } from './spend'
-import { attachClient, canTellApart, followed, readLive, forgetProcesses, isRunning, machineFrom, newMail, news, parentOf, searchGraves } from './register'
+import { attachClient, canTellApart, followed, readLive, forgetProcesses, groupPets, GROUPINGS, hatchArgs, isRunning, jobOf, machineFrom, newMail, news, parentOf, searchGraves } from './register'
 import { hasRecentMail, isFrom, mailEdges, postsOf, readMail, threadsOf, type MailFact } from './mail'
 import { mailFrames } from './pets'
 import { settings } from './config'
@@ -255,19 +255,30 @@ test('an alert goes out when a pet starts to need you, and on finishing only whe
   }
 })
 
-test('a pet left waiting on you for a while looks sad, until it falls asleep', async () => {
+test('a pet stuck on you is sad at once; one left idle is never sad, only sleepy after a while', async () => {
   const live = { pid: 1, procStart: null, status: 'idle', waitingFor: null, tmux: null, job: null, name: null, isRemote: false, isElsewhere: false, cwd: null, startedMs: null, socket: null }
-  const waiting = withLive(parseSession('a', assistant('end_turn'), null, NOW - 45 * 60_000, NOW), live)
-  expect(waiting.mood).toBe('waiting')
-  expect(isSad(waiting, NOW, 30 * 60_000)).toBe(true)
-  expect(isSad(waiting, NOW, 60 * 60_000)).toBe(false)
-  expect(isSad(waiting, NOW, 0)).toBe(false) // turned off
-  expect(isSad(waiting, NOW + 7 * 3600_000, 30 * 60_000)).toBe(false) // asleep by then
-  expect(isSad({ ...waiting, live: null }, NOW, 30 * 60_000)).toBe(false) // closed
-  expect(isSad({ ...waiting, mood: 'busy' }, NOW, 30 * 60_000)).toBe(false)
-  // the sad face differs from the content one
-  const o = outfits([waiting]).get('a')!
-  expect(petRest(o, { faded: false, sad: true }).cells).not.toBe(petRest(o, { faded: false }).cells)
+  const idle = withLive(parseSession('a', assistant('end_turn'), null, NOW - 45 * 60_000, NOW), live)
+  expect(idle.mood).toBe('waiting')
+  // stuck on a permission prompt: sad from the first moment, and for as long as it lasts
+  const stuck = withLive(idle, { ...live, status: 'waiting', waitingFor: 'permission prompt' })
+  expect(isSad(stuck)).toBe(true)
+  expect(isSad({ ...stuck, live: null })).toBe(false) // closed
+  // idle, however long: never sad
+  expect(isSad(idle)).toBe(false)
+  expect(isSad({ ...idle, mtimeMs: NOW - 3 * 86_400_000 })).toBe(false)
+  // sleepy once idle past the setting's hours, and never when it is 0
+  expect(isSleepy(idle, NOW, 12 * 3600_000)).toBe(false)
+  expect(isSleepy(idle, NOW + 13 * 3600_000, 12 * 3600_000)).toBe(true)
+  expect(isSleepy(idle, NOW + 13 * 3600_000, 0)).toBe(false)
+  expect(isSleepy({ ...idle, mood: 'idle' }, NOW + 13 * 3600_000, 12 * 3600_000)).toBe(true)
+  expect(isSleepy(stuck, NOW + 13 * 3600_000, 12 * 3600_000)).toBe(false) // stuck on you: sad, not sleepy
+  expect(isSleepy({ ...idle, live: null }, NOW + 13 * 3600_000, 12 * 3600_000)).toBe(false) // closed: a halo instead
+  // the sad face, the sleepy one and the content one all differ
+  const o = outfits([idle]).get('a')!
+  const content = petRest(o, { faded: false }).cells
+  const sad = petRest(o, { faded: false, sad: true }).cells
+  const sleepy = petRest(o, { faded: false, sleepy: true }).cells
+  expect(new Set([content, sad, sleepy]).size).toBe(3)
 })
 
 test('a session follows the shelf another reads while its lease holds, and takes over when it lapses', async () => {
@@ -489,7 +500,7 @@ const FILES: Record<string, string> = {
     line({ type: 'user', cwd: '/src/bramble', message: { role: 'user', content: 'please fix the flaky test' } }),
     line({
       type: 'assistant', cwd: '/src/bramble', gitBranch: 'fix',
-      message: { role: 'assistant', model: 'claude-haiku-4-5-20251001', stop_reason: 'tool_use', content: [{ type: 'text', text: 'Running it now.' }] },
+      message: { role: 'assistant', model: 'claude-haiku-4-5-20251001', stop_reason: 'tool_use', content: [{ type: 'text', text: 'Running it now.' }], usage: { input_tokens: 10, cache_read_input_tokens: 155_000 } },
     }),
   ].join('\n') + '\n',
   // c was born in /src/clover and has since cd'd into a folder of it: it stays clover's pet
@@ -512,8 +523,10 @@ const REGISTRY: Record<string, object> = {
   // e runs on another machine sharing this home folder: its pid means nothing here
   [`${LIVE}/40.json`]: { pid: 20, sessionId: 'e', status: 'busy', procStart: '777', pidDomain: 'linux:0ther0machine:pid:[1]', updatedAt: Date.now(), tmux: 'far:@1.%1', cwd: '/src/elsewhere' },
 }
-// b's subagents: one at work, one done five minutes ago; and the first one's trace
+// b's subagents: one at work, three done minutes ago, and four done days ago
+// (older than any window: a pet's page shows them all the same); and the first one's trace
 const SUB = `${ROOT}/-src-bramble/b/subagents`
+const agentAt = (n: number, now: number) => (n === 1 ? now : n >= 5 ? now - n * 86_400_000 : now - n * 60_000)
 const TRACES: Record<string, string> = {
   [`${SUB}/agent-a1.jsonl`]: [
     line({ type: 'user', isSidechain: true, message: { role: 'user', content: 'Find the flaky test' } }),
@@ -527,7 +540,8 @@ const ALIVE = new Set(['/proc/self', '/proc/10', '/proc/20', '/proc/30'])
 const stat = (pid: number, start: string) => `${pid} (claude code) S ${Array(18).fill('0').join(' ')} ${start} 0 0`
 const STATS: Record<string, string> = { '/proc/20/stat': stat(20, '777'), '/proc/30/stat': stat(30, '999') }
 
-test('the shelf shows running pets, hides killed ones until asked, and opens a pet', async ($, on) => {
+// in tmux, as /config may say: the background has a test of its own
+test('the shelf shows running pets, hides killed ones until asked, and opens a pet', { options: { hatchIn: 'tmux' } }, async ($, on) => {
   const now = Date.now()
   const clock = mock.clock(on, { now })
   mock.env(on, { HOME: '/h', TMUX: '/tmp/tmux-1/default,1,0' }) // this session runs in tmux
@@ -570,6 +584,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
   })
   on('fs.list', async (_$, e) => {
     const entry = (name: string, kind: 'file' | 'dir', mtimeMs = now) => ({ name, kind, size: 1, mtimeMs, isLink: false })
+    if (e.path === SUB) return { value: [1, 2, 3, 4, 5, 6, 7, 8].flatMap(n => [entry(`agent-a${n}.jsonl`, 'file', agentAt(n, now)), entry(`agent-a${n}.meta.json`, 'file', agentAt(n, now))]) }
     if (e.path === LIVE) return { value: Object.keys(REGISTRY).map(f => entry(f.slice(LIVE.length + 1), 'file')) }
     if (e.path === ROOT) return { value: ['-src-acorn', '-src-bramble', '-src-clover', '-src-broken'].map(d => entry(d, 'dir')) }
     const value = Object.keys(FILES)
@@ -595,10 +610,12 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
       `/t/claude-1\n${12 * 1024 * 1024}\t/t/claude-1\n${800 * 1024}\t${ROOT}\n\x1f\n`
       + `${6_000_000}\t/t/claude-1/-src-bramble/b\n1000\t${ROOT}/-src-bramble/b.jsonl\n`
       + `${3_000_000}\t/t/claude-1/-src-clover/c\n`)
-    if (e.argv[0] === 'sh' && e.argv[2]!.includes('meta.json')) return ok(!e.argv[4]!.includes('/b/') ? '' :
-      `\x1e${SUB}/agent-a1.jsonl\n${sec}\n0\n"model":"claude-haiku-4-5-20251001"\n${line({ agentType: 'Explore', description: 'Find the flaky test' })}\n`
-      + [2, 3, 4, 5, 6, 7, 8].map(n =>
-        `\x1e${SUB}/agent-a${n}.jsonl\n${sec - 60 * n}\n1\n\n${line({ agentType: 'general-purpose', description: n === 2 ? 'Read the CI logs' : `Done task ${n}` })}\n`).join(''))
+    // the subagents asked for, each as the script prints it
+    if (e.argv[0] === 'sh' && e.argv[2]!.includes('meta.json')) return ok(e.argv.slice(4).map(f => {
+      const n = Number(/agent-a(\d)\.jsonl$/.exec(f)?.[1])
+      return n === 1 ? `\x1e${SUB}/agent-a1.jsonl\n${sec}\n0\n"model":"claude-haiku-4-5-20251001"\n${line({ agentType: 'Explore', description: 'Find the flaky test' })}\n`
+        : `\x1e${SUB}/agent-a${n}.jsonl\n${Math.floor(agentAt(n, now) / 1000)}\n1\n\n${line({ agentType: 'general-purpose', description: n === 2 ? 'Read the CI logs' : `Done task ${n}` })}\n`
+    }).join(''))
     if (e.argv[0] === 'tmux' && e.argv[1] === 'new-session') return ok(e.argv.includes('-c') && e.argv.includes('/h/src/bramble') ? 'bramble:@11.%50\n' : 'clover-c:@9.%42\n')
     // b's pane runs b (pid 20), unless the test says the pane went to someone else
     if (e.argv[0] === 'tmux' && e.argv[1] === 'display-message' && e.argv.includes('#{pane_pid}')) return ok(paneOwner)
@@ -624,6 +641,8 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
         `"timestamp":"${new Date(now - 3 * 3600_000).toISOString()}"`,
         CUSTOM[id] ? `"customTitle":${JSON.stringify(CUSTOM[id])}` : '',
         id === 'c' ? '"cwd":"/src/clover"' : '',
+        // c's last reply is out of its tail's reach (a big line came after it): its context is read as a fact
+        id === 'c' ? '"contextTokens":"100000"' : '',
         `"aiTitle":${JSON.stringify(TITLES[id])}`,
         // b's API calls, as the usage pass prints them: one written twice, as Claude Code does
         ...(id === 'b' ? [1, 1, 2].map(n => `U msg_${n} claude-haiku-4-5-20251001 ${new Date(now - 60_000).toISOString()} 1000 500 0 0 - -`) : []),
@@ -648,19 +667,19 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
       viewport: { columns: 140, rows: 40 },
     })
     expect(await ui.find({ type: 'Text', text: /★ you/ })).toBeDefined() // your card, where others have their jump button
-    expect(await ui.find({ type: 'Text', text: /Needs approval/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Last talked to first/ })).toBeDefined() // one row, the pet talked to last first
     expect(await ui.find({ type: 'Text', text: /Waiting for you/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /born 3h ago/ })).toBeDefined()
     expect(await ui.find({ key: 'home-b' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /Working/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /Opus 5.5/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /Other one/ })).toBeDefined()
     shelfColor = (await ui.find({ type: 'Text', text: /^bramble$/ }))?.props.color
-    // the groups say working or idle, so the cards carry no mood pill; b has two subagents at work
+    // no pill on the cards; b has two subagents at work
     expect(await ui.find({ type: 'Text', text: /needs you/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^2 subagents working$/ })).toBeDefined()
-    // none at work: all it ever launched, in grey
-    expect((await ui.find({ type: 'Text', text: /^3 subagents launched$/ }))?.props.dimColor).toBe(true)
+    // the row is not by mood, so a card says working or waiting for you, before what it once launched
+    expect(await ui.find({ type: 'Text', text: /^(● working|◌ waiting for you)$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^3 subagents launched$/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^3 running pets across 3 folders$/ })).toBeDefined() // you, b here, e on another machine
     // what Claude keeps on disk, red past 10 GB, and b's share on its card
     expect((await ui.find({ type: 'Text', text: /^12\.8 GB$/ }))?.props.color).toBe('#ff5555')
@@ -708,6 +727,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     await ui.press({ key: 'graveyard' })
     expect(await ui.find({ type: 'Text', text: /Killed one/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /an ai title/ })).toBeUndefined()
+    expect(JSON.stringify(await ui.drawn())).toContain('"10","%"')
     expect(await ui.find({ type: 'Text', text: /born 3h ago/ })).toBeDefined()
     // searched by a regexp, as it is typed
     await ui.input({ key: 'grave-search', text: 'nothing like it', kind: 'change' })
@@ -740,6 +760,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     expect(ran.some(a => a[0] === 'tmux' && a[1] === 'new-window')).toBe(false)
     // and goes straight to its new pane
     expect(ran.some(a => a[0] === 'tmux' && a[1] === 'select-pane' && a[3] === '%42')).toBe(true)
+    expect(ran.some(a => a[0] === 'claude')).toBe(false) // tmux, as set: no background session tried first
     // a pet's name opens it on every surface: by a click, Tab and Enter, or its digit
     expect((await ui.find({ key: 'name-c' }))?.props.hotkey).toBe('1')
     // a closed pet's temp folder can be cleaned, in two presses; its transcript stays
@@ -792,11 +813,15 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     expect(gitOrder.indexOf('a fresh commit in another worktree')).toBeGreaterThan(-1)
     expect(gitOrder.indexOf('a fresh commit in another worktree')).toBeLessThan(gitOrder.indexOf('make the test less flaky'))
     // its subagents, as little pets: the running one first; one opens on its trace
-    expect(await ui.find({ type: 'Text', text: /^ · 1 working · click one for its trace$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ · 1 working · the newest 6 of 8 · click one for its trace$/ })).toBeDefined()
     expect(await ui.find({ key: 'agent-a2' })).toBeDefined()
-    // at most six: every running one, then the newest finished ones
-    expect(await ui.find({ key: 'agent-a6' })).toBeDefined()
+    // at most six (the setting's default): the running one, then the newest
+    // finished ones, however long ago they ran; only those are read
+    expect(await ui.find({ key: 'agent-a6' })).toBeDefined() // six days ago
     expect(await ui.find({ key: 'agent-a7' })).toBeUndefined()
+    expect(JSON.stringify(await ui.drawn())).toContain('the newest 6 of 8')
+    const readAgents = ran.filter(a => a[0] === 'sh' && a[2]!.includes('meta.json')).at(-1)!
+    expect(readAgents.slice(4).map(f => f.split('/').pop())).toEqual(['agent-a1.jsonl', 'agent-a2.jsonl', 'agent-a3.jsonl', 'agent-a4.jsonl', 'agent-a5.jsonl', 'agent-a6.jsonl'])
     expect(JSON.stringify(await ui.drawn()).indexOf('"agent-a1"')).toBeLessThan(JSON.stringify(await ui.drawn()).indexOf('"agent-a2"'))
     if (surface === 'terminal') await ui.pointer({ type: 'down', x: 1, y: 1, in: 'hit-agent:a1' })
     else await ui.press({ key: 'agent-a1' })
@@ -845,9 +870,55 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     await clock.settle()
     expect(sent.at(-1)).toEqual({ to: 'b', text: '[tamaclaudchi rename] flaky test hunter' })
     expect(await ui.find({ key: 'rename-name' })).toBeUndefined()
+    // its context is 93% full: its page offers a compact, which its own copy of the mod runs
+    expect((await ui.find({ key: 'compact' }))?.props.label).toBe('⇲ compact · 93% full')
+    await ui.press({ key: 'compact' })
+    expect(sent.at(-1)).toEqual({ to: 'b', text: '[tamaclaudchi compact]' })
     await ui.press({ key: 'back' })
-    expect(await ui.find({ type: 'Text', text: /★ you/ })).toBeDefined() // your card, where others have their jump button
+    // on its card, its subagents at work come first: no compact in the middle of them
+    expect(await ui.find({ key: 'compact-b' })).toBeUndefined()
+
+    // the shelf's rows: the one talked to last first, then by mood, repo, model, and back
+    expect((await ui.find({ key: 'group' }))?.props.label).toBe('⇅ last talked to first')
+    expect(JSON.stringify(await ui.drawn())).toContain('"Last talked to first"," "')
+    await ui.press({ key: 'group' })
+    expect((await ui.find({ key: 'group' }))?.props.label).toBe('⇅ by mood')
     expect(await ui.find({ type: 'Text', text: /Needs approval/ })).toBeDefined()
+    await ui.press({ key: 'group' })
+    expect((await ui.find({ key: 'group' }))?.props.label).toBe('⇅ by repo')
+    expect(await ui.find({ type: 'Text', text: /Needs approval/ })).toBeUndefined()
+    expect(JSON.stringify(await ui.drawn())).toContain('"acorn"," "') // a row's header: its repo, then its count
+    await ui.press({ key: 'group' })
+    expect(JSON.stringify(await ui.drawn())).toContain('"Haiku"," "')
+    expect(JSON.stringify(await ui.drawn())).toContain('"Opus"," "')
+    await ui.press({ key: 'group' })
+    expect(JSON.stringify(await ui.drawn())).toContain('"Last talked to first"," "')
+
+    // the next pet stuck on you, one press away: b, in its tmux pane
+    expect((await ui.find({ key: 'next' }))?.props.label).toBe('▲ next that needs you · 1')
+    ran.length = 0
+    await ui.press({ key: 'next' })
+    expect(ran).toContainEqual(['tmux', 'switch-client', '-t', '%7'])
+    // and from any session's prompt, the pane open or not
+    ran.length = 0
+    const went = await $.command.run({ command: 'tama-next', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 140 } })
+    expect(ran).toContainEqual(['tmux', 'switch-client', '-t', '%7'])
+    expect(went.text).toBe('▲ Other one needs you: permission prompt')
+
+    // a broadcast says who it is from, and names every pet it goes to before it goes
+    await ui.press({ key: 'broadcast' })
+    expect(await ui.find({ type: 'Text', text: /Broadcast from/ })).toBeDefined()
+    expect(JSON.stringify(await ui.drawn())).toContain('"Mine"')
+    expect(await ui.find({ type: 'Text', text: /^Other one$/ })).toBeDefined()
+    expect(JSON.stringify(await ui.drawn())).toContain('every running pet · 1')
+    // each named as its card names it: its number on the shelf (b's is 3, after your own and e), then its name
+    expect(JSON.stringify(await ui.drawn())).toMatch(/"3: "\]\},\{"type":"Text","props":\{"color":"[^"]+"\},"children":\["Other one"\]/) // b: e is on another machine, c is closed
+    await ui.input({ key: 'broadcast-text', text: 'rebase on main, please' })
+    expect(sent.at(-1)).toEqual({ to: 'b', text: 'rebase on main, please' })
+    expect(toasts.at(-1)).toContain('From Mine to 1 pet: Other one')
+    expect(await ui.find({ key: 'broadcast-text' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /★ you/ })).toBeDefined() // your card, where others have their jump button
+    expect(await ui.find({ type: 'Text', text: /Last talked to first/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /Waiting for you/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /born 3h ago/ })).toBeDefined()
     expect(await ui.find({ key: 'home-b' })).toBeDefined()
@@ -905,7 +976,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     await ui.press({ key: 'kill' })
     expect(ran.some(a => a[1] === 'kill-pane' || a[1] === 'kill-session')).toBe(false)
     paneOwner = '20\n'
-    expect(await ui.find({ type: 'Text', text: /Working/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Last talked to first/ })).toBeDefined()
     await ui.unmount()
   }
   // a poll reads no registry entry it has read before, and checks no process it saw end
@@ -956,11 +1027,11 @@ test("the messages page draws a tab per conversation, the open one filled, and a
   const clock = mock.clock(on, { now })
   mock.env(on, { HOME: '/h' })
   const ago = (s: number) => new Date(now - s * 1000).toISOString()
-  // this session (`me`) and `pay` run; `docs` has closed
+  // this session (`me`), `pay` and `ops` run; `docs` has closed
   const path = (id: string) => `${ROOT}/-src-${id}/${id}.jsonl`
   const reg = (pid: number, id: string, name: string) =>
     ({ pid, sessionId: id, cwd: `/src/${id}`, status: 'idle', name, messagingSocketPath: `/tmp/cc-socks/${pid}.sock` })
-  const registry: Record<string, object> = { [`${LIVE}/10.json`]: reg(10, 'me', 'audit'), [`${LIVE}/20.json`]: reg(20, 'pay', 'payments') }
+  const registry: Record<string, object> = { [`${LIVE}/10.json`]: reg(10, 'me', 'audit'), [`${LIVE}/20.json`]: reg(20, 'pay', 'payments'), [`${LIVE}/30.json`]: reg(30, 'ops', 'ops') }
   const from = (pid: number, name: string, id: string, body: string, s: number) =>
     line({ type: 'attachment', timestamp: ago(s), attachment: { origin: { kind: 'peer', from: `uds:/tmp/cc-socks/${pid}.sock`, verifiedPeerPid: pid, msg_id: id, name, body } } })
   const to = (target: string, id: string, body: string, s: number) => [
@@ -969,11 +1040,12 @@ test("the messages page draws a tab per conversation, the open one filled, and a
   ]
   // what each transcript says of its messages, as the read scripts' awk pass prints them
   const MAIL: Record<string, string[]> = {
-    me: [...to('payments', 'm-1', 'Schema migration finished', 300), from(20, 'payments', 'm-2', 'Thanks, rebasing now', 200), ...to('docs', 'm-3', 'Docs are stale', 100)],
+    me: [...to('payments', 'm-1', 'Schema migration finished', 300), from(20, 'payments', 'm-2', 'Thanks, rebasing now', 200), ...to('docs', 'm-3', 'Docs are stale', 100), ...to('ops', 'm-4', 'Deploy at five', 50)],
     pay: [from(10, 'audit', 'm-1', 'Schema migration finished', 299), ...to('uds:/tmp/cc-socks/10.sock', 'm-2', 'Thanks, rebasing now', 201)],
     docs: [from(10, 'audit', 'm-3', 'Docs are stale', 99)],
+    ops: [from(10, 'audit', 'm-4', 'Deploy at five', 49)],
   }
-  const TITLE: Record<string, string> = { me: 'Repository audit', pay: 'Payments API', docs: 'Docs' }
+  const TITLE: Record<string, string> = { me: 'Repository audit', pay: 'Payments API', docs: 'Docs', ops: 'Ops' }
   const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
   const idOf = (p: string) => p.split('/').pop()!.replace('.jsonl', '')
   on('session.id', async () => ({ value: 'me' }))
@@ -982,7 +1054,7 @@ test("the messages page draws a tab per conversation, the open one filled, and a
   for (const event of ['ui.log', 'ui.toast', 'fs.write'] as const) on(event, async () => ({ value: undefined }))
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   on('ui.blit', async () => ({ value: {} }))
-  on('fs.exists', async (_$, e) => ({ value: ['/proc/self', '/proc/10', '/proc/20'].includes(e.path) }))
+  on('fs.exists', async (_$, e) => ({ value: ['/proc/self', '/proc/10', '/proc/20', '/proc/30'].includes(e.path) }))
   on('fs.stat', async () => ({ deny: 'ENOENT' }))
   on('fs.read', async (_$, e) => (registry[e.path] ? { value: JSON.stringify(registry[e.path]) } : { deny: 'ENOENT' }))
   on('fs.list', async (_$, e) => ({
@@ -991,7 +1063,7 @@ test("the messages page draws a tab per conversation, the open one filled, and a
   on('process.run', async (_$, e) => {
     const script = e.argv[0] === 'sh' ? e.argv[2]! : ''
     const paths = e.argv.slice(4)
-    if (script.includes('-printf')) return ok(['me', 'pay', 'docs'].map(id => `${now / 1000}\t1\t${path(id)}\n`).join(''))
+    if (script.includes('-printf')) return ok(['me', 'pay', 'docs', 'ops'].map(id => `${now / 1000}\t1\t${path(id)}\n`).join(''))
     // the messages' texts, read when a page shows them
     if (script.startsWith('for f in')) return ok(paths.flatMap(p => MAIL[idOf(p)]!.map(l => `M\t${l}\n`)).join(''))
     if (script.includes('du -sk') || script.includes('machine-id') || e.argv[0] !== 'sh') return ok('')
@@ -1012,19 +1084,22 @@ test("the messages page draws a tab per conversation, the open one filled, and a
     props: { title: 'TamaClaudchi', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} },
     viewport: { columns: 140, rows: 80 },
   })
-  // the shelf counts the three messages; `m` opens them
+  // the shelf counts the three messages between running sessions (not the one to docs, closed); `m` opens them
   expect(JSON.stringify(await ui.drawn())).toContain('3 messages')
   await ui.press({ key: 'mailroom' })
   await clock.settle()
-  // a tab per conversation; the latest, with docs, open and filled in the headers' cyan
-  expect(await ui.find({ key: 'mail-tab-docs|me' })).toBeDefined()
+  // a tab per conversation between running sessions; the latest, with ops, open
+  expect(await ui.find({ key: 'mail-tab-me|ops' })).toBeDefined()
   expect(await ui.find({ key: 'mail-tab-me|pay' })).toBeDefined()
-  expect((await ui.find({ type: 'Text', text: /Docs ↔ Repository audit/ }))?.props.backgroundColor).toBe('#78dce8')
-  expect((await ui.find({ type: 'Text', text: /Repository audit ↔ Payments API/ }))?.props.backgroundColor).toBe('#4a4458')
-  expect(await ui.find({ type: 'Text', text: /Docs are stale/ })).toBeDefined()
+  expect(await ui.find({ key: 'mail-tab-docs|me' })).toBeUndefined()
+  // the open tab bold, underlined, in cyan; the others dim
+  expect((await ui.find({ type: 'Text', text: /Repository audit ↔ Ops/ }))?.props).toMatchObject({ bold: true, underline: true, color: '#78dce8' })
+  expect((await ui.find({ type: 'Text', text: /Repository audit ↔ Payments API/ }))?.props.dimColor).toBe(true)
+  expect(await ui.find({ type: 'Text', text: /Deploy at five/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Docs are stale/ })).toBeUndefined()
   // the other tab: both ways, the reply to a socket in the same conversation
   await ui.press({ key: 'mail-tab-me|pay' })
-  expect((await ui.find({ type: 'Text', text: /Repository audit ↔ Payments API/ }))?.props.backgroundColor).toBe('#78dce8')
+  expect((await ui.find({ type: 'Text', text: /Repository audit ↔ Payments API/ }))?.props).toMatchObject({ bold: true, underline: true, color: '#78dce8' })
   expect(await ui.find({ type: 'Text', text: /Schema migration finished/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Thanks, rebasing now/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Docs are stale/ })).toBeUndefined()
@@ -1062,12 +1137,13 @@ test('a background session keeps its job while attached, and takes the attach\'s
   // as Claude Code writes them: `claude attach e0ff4760` registers too, with the same session id
   const bg = { pid: 1098008, sessionId: 'e0ff4760-8791', kind: 'bg', jobId: 'e0ff4760', status: 'shell', name: 'night-shift', messagingSocketPath: '/run/s.sock' }
   const attach = { pid: 1168001, sessionId: 'e0ff4760-8791', kind: 'interactive', tmux: 'zoo:@216.%242', name: 'zoo-43' }
-  for (const files of [{ 'a.json': attach, 'b.json': bg }, { 'c.json': bg, 'd.json': attach }]) {
+  const layouts: Record<string, object>[] = [{ 'a.json': attach, 'b.json': bg }, { 'c.json': bg, 'd.json': attach }]
+  for (const files of layouts) {
     const $ = {
       env: { get: async (k: string) => (k === 'HOME' ? '/h' : undefined) },
       fs: {
         list: async () => Object.keys(files).map(name => ({ name, kind: 'file', size: 1, mtimeMs: 1, isLink: false })),
-        read: async (path: string) => JSON.stringify((files as Record<string, object>)[path.split('/').pop()!]),
+        read: async (path: string) => JSON.stringify(files[path.split('/').pop()!]),
         exists: async () => true,
       },
       process: { run: async () => ({ exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }) },
@@ -1078,4 +1154,224 @@ test('a background session keeps its job while attached, and takes the attach\'s
     expect(live.tmux).toBe('zoo:@216.%242')
     expect(live.socket).toBe('/run/s.sock')
   }
+})
+
+test('claude --bg is read for its job, and a new pet is started with its model, worktree and prompt', async () => {
+  // as claude prints it, its service's note first when it had to start one
+  expect(jobOf('Starting background service…\nbackgrounded · 1a2b3c4d · acorn (idle — send a prompt to start)\n  claude agents  list sessions\n')).toBe('1a2b3c4d')
+  expect(jobOf('Workspace not trusted. Run `claude` in /x once and accept the trust prompt, then retry.')).toBeNull()
+  expect(hatchArgs({ model: null, worktree: null, prompt: '  ' })).toEqual([])
+  // a prompt goes after --, so one starting with a dash stays a prompt; the worktree is named, or -w would take the prompt for its name
+  expect(hatchArgs({ model: 'sonnet', worktree: 'acorn-x1', prompt: ' -v: fix the flaky test ' })).toEqual(['--model', 'sonnet', '--worktree', 'acorn-x1', '--', '-v: fix the flaky test'])
+})
+
+test('a pet hatches, comes back and is stopped in the background; tmux takes over where claude --bg cannot', async ($, on) => {
+  const now = Date.now()
+  const sec = Math.floor(now / 1000)
+  const clock = mock.clock(on, { now })
+  mock.env(on, { HOME: '/h', TMUX: '/tmp/tmux-1/default,1,0' }) // this session runs in tmux
+  // a closed pet in acorn, and a background one running in bramble with no transcript yet
+  const OLD = '/h/.claude/projects/-h-src-acorn/c0ffee00-1111.jsonl'
+  const BG = { pid: 4242, sessionId: 'bead0000-2222', cwd: '/h/src/bramble', jobId: '9f9f9f9f', kind: 'bg', status: 'idle', name: 'bramble-bg', startedAt: now }
+  on('session.id', async () => ({ value: 'me' }))
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('command.register', async () => ({ value: { command: 'tama' } }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('ui.blit', async () => ({ value: {} }))
+  on('ui.log', async () => ({ value: undefined }))
+  on('ui.copy', async () => ({ value: { isCopied: true as const } }))
+  const toasts: string[] = []
+  on('ui.toast', async (_$, e) => (toasts.push(e.text), { value: undefined }))
+  on('fs.stat', async (_$, e) => (['/h/src/acorn', '/h/untrusted'].includes(e.path) ? { value: { kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false } } : { deny: 'ENOENT' }))
+  on('fs.list', async (_$, e) => ({ value: e.path === '/h/.claude/sessions' ? [{ name: '4242.json', kind: 'file' as const, size: 1, mtimeMs: now, isLink: false }] : [] }))
+  on('fs.read', async (_$, e) => (e.path === '/h/.claude/sessions/4242.json' ? { value: JSON.stringify(BG) } : { deny: 'ENOENT' }))
+  on('fs.write', async () => ({ value: undefined }))
+  on('fs.exists', async (_$, e) => ({ value: e.path === '/proc/self' || e.path === '/proc/4242' }))
+  const ran: { argv: string[]; cwd?: string }[] = []
+  let bgSessions = new Set<string>() // the tmux sessions opened to attach, by name
+  on('process.run', async (_$, e) => {
+    ran.push({ argv: [...e.argv], cwd: e.init?.cwd })
+    const out = (exitCode: number, stdout: string, stderr = '') => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
+    const [cmd, sub] = e.argv
+    if (cmd === 'claude' && sub === '--bg') {
+      // a folder never opened in claude cannot start in the background: only an interactive claude asks to trust it
+      if (e.init?.cwd === '/h/untrusted') return out(1, '', 'Starting background service…\nWorkspace not trusted. Run `claude` in /h/untrusted once and accept the trust prompt, then retry.\n')
+      return out(0, 'backgrounded · 1a2b3c4d · acorn (idle — send a prompt to start)\n  claude attach 1a2b3c4d    open in this terminal\n', 'Starting background service…\n')
+    }
+    if (cmd === 'claude' && sub === 'stop') return out(0, `stopped ${e.argv[2]}\n`)
+    if (cmd === 'tmux' && sub === 'has-session') return out(bgSessions.has(e.argv[3]!.slice(1)) ? 0 : 1, '')
+    if (cmd === 'tmux' && sub === 'new-session') {
+      const name = e.argv[e.argv.indexOf('-s') + 1]!
+      bgSessions.add(name)
+      return out(0, `${name}:@1.%5\n`)
+    }
+    // every transcript, as find prints them; then the one asked for, as the read script prints it
+    if (cmd === 'sh' && e.argv[2]!.includes('-printf')) return out(0, `${sec - 3600}\t1\t${OLD}\n`)
+    if (cmd === 'sh' && e.argv[2]!.includes('customTitle')) return out(0, `\x1e${OLD}\n"aiTitle":"Old friend"\n"cwd":"/h/src/acorn"\n\x1f\n${assistant('end_turn').replace(/\/home\/x\/src\/acorn[^"]*/, '/h/src/acorn')}\n`)
+    return out(0, '')
+  })
+  const argvOf = (first: string, second: string) => ran.filter(r => r.argv[0] === first && r.argv[1] === second)
+
+  await $.session.start({ cwd: '/h/src/acorn', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'tama', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 140 } })
+  await clock.settle()
+  const ui = await $.ui.mount({
+    plugin: 'tamaclaudchi', surface: 'desktop', component: 'Pane', requestId: 'tamaclaudchi',
+    props: { title: 'TamaClaudchi', isFocused: true, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+    viewport: { columns: 140, rows: 40 },
+  })
+
+  // with a first prompt, a model and a worktree: claude --bg in the folder, and it gets to work where it is
+  await ui.press({ key: 'spawn' })
+  expect(JSON.stringify(await ui.drawn())).toContain('in the background (claude --bg)')
+  await ui.input({ key: 'spawn-prompt', text: 'fix the flaky test', kind: 'change' })
+  await ui.press({ key: 'spawn-model-sonnet' })
+  await ui.press({ key: 'spawn-worktree' })
+  await ui.input({ key: 'spawn-dir', text: '~/src/acorn' })
+  const [hatched] = argvOf('claude', '--bg')
+  expect(hatched!.cwd).toBe('/h/src/acorn')
+  expect(hatched!.argv.slice(0, 5)).toEqual(['claude', '--bg', '--model', 'sonnet', '--worktree'])
+  expect(hatched!.argv[5]).toMatch(/^acorn-[a-z0-9]+$/)
+  expect(hatched!.argv.slice(6)).toEqual(['--', 'fix the flaky test'])
+  expect(argvOf('tmux', 'new-session')).toEqual([])
+  expect(toasts.at(-1)).toContain('hatching in the background (1a2b3c4d), on your prompt')
+  expect(await ui.find({ key: 'spawn-dir' })).toBeUndefined() // the form closed
+
+  // with none, the form emptied since: opened at once, `claude attach` in a tmux session of its own, this client switched there
+  ran.length = 0
+  await ui.press({ key: 'spawn' })
+  expect((await ui.find({ key: 'spawn-prompt' }))?.props.value).toBe('')
+  await ui.input({ key: 'spawn-dir', text: '~/src/acorn' })
+  expect(argvOf('claude', '--bg')[0]!.argv).toEqual(['claude', '--bg'])
+  expect(argvOf('tmux', 'new-session')[0]!.argv).toEqual(['tmux', 'new-session', '-d', '-s', 'bg-1a2b3c4d', 'claude attach 1a2b3c4d'])
+  expect(argvOf('tmux', 'switch-client')[0]!.argv).toEqual(['tmux', 'switch-client', '-t', 'bg-1a2b3c4d:'])
+
+  // a folder not trusted yet: hatched in tmux, claude typed into its shell to ask, and the toast says why
+  ran.length = 0
+  await ui.press({ key: 'spawn' })
+  await ui.press({ key: 'spawn-model-haiku' })
+  await ui.input({ key: 'spawn-dir', text: '/h/untrusted' })
+  expect(argvOf('tmux', 'new-session')[0]!.argv).toEqual(['tmux', 'new-session', '-d', '-P', '-F', '#{session_name}:#{window_id}.#{pane_id}', '-s', 'untrusted', '-c', '/h/untrusted'])
+  expect(argvOf('tmux', 'send-keys')[0]!.argv).toEqual(['tmux', 'send-keys', '-t', '%5', "claude '--model' 'haiku'", 'Enter'])
+  expect(toasts.at(-1)).toContain('Workspace not trusted')
+  expect(toasts.at(-1)).toContain('a new pet is hatching in tmux session untrusted')
+
+  // a closed pet comes back in the background, in its folder, and is opened
+  ran.length = 0
+  bgSessions = new Set()
+  await ui.press({ key: 'graveyard' })
+  await ui.press({ key: 'wing-c0ffee00-1111' })
+  expect(argvOf('claude', '--bg')[0]).toEqual({ argv: ['claude', '--bg', '--resume', 'c0ffee00-1111'], cwd: '/h/src/acorn' })
+  expect(argvOf('tmux', 'new-session')[0]!.argv).toEqual(['tmux', 'new-session', '-d', '-s', 'bg-1a2b3c4d', 'claude attach 1a2b3c4d'])
+  expect(toasts.some(t => t.includes('Old friend is back, in the background (1a2b3c4d)'))).toBe(true)
+  await ui.press({ key: 'graveyard' })
+
+  // a background pet is stopped as `claude stop` does, and the tmux session opened to attach to it goes with it
+  await ui.press({ key: 'name-bead0000-2222' })
+  expect(JSON.stringify(await ui.drawn())).toContain('in the background (9f9f9f9f)')
+  ran.length = 0
+  bgSessions = new Set(['bg-9f9f9f9f'])
+  await ui.press({ key: 'kill' })
+  expect((await ui.find({ key: 'kill' }))?.props.label).toBe('✕ press again: stop its background session')
+  await ui.press({ key: 'kill' })
+  expect(argvOf('claude', 'stop')[0]!.argv).toEqual(['claude', 'stop', '9f9f9f9f'])
+  expect(argvOf('tmux', 'kill-session')[0]!.argv).toEqual(['tmux', 'kill-session', '-t', '=bg-9f9f9f9f'])
+  expect(ran.some(r => r.argv[0] === 'kill')).toBe(false) // its pid's start is unknown: never signalled
+  expect(toasts.some(t => t.includes('killed its background session (9f9f9f9f)'))).toBe(true)
+  await ui.unmount()
+})
+
+test('a compact asked from another shelf runs /compact here; a context filling past the setting is announced once', async ($, on) => {
+  const ran: string[] = []
+  on('command.run', { command: 'compact' }, async (_$, e) => (ran.push(e.command), { text: '' }))
+  on('ui.log', async () => ({ value: undefined }))
+  on('session.receive', async (_$, e) => ({ text: e.text }))
+  const asked = await $.session.receive({ origin: { kind: 'peer', plugin: 'tamaclaudchi' }, text: '[tamaclaudchi compact]' })
+  expect(asked.consumed).toBeDefined()
+  expect(ran).toEqual(['compact'])
+  // as a session may hand it on: in the envelope a cross-session message comes in
+  const wrapped = await $.session.receive({ origin: { kind: 'peer', plugin: 'tamaclaudchi' }, text: '<cross-session-message from-plugin="tamaclaudchi">\n[tamaclaudchi compact]\n</cross-session-message>' })
+  expect(wrapped.consumed).toBeDefined()
+  expect(ran).toEqual(['compact', 'compact'])
+  // only from this mod's own shelf: another plugin's message is left to the model
+  const other = await $.session.receive({ origin: { kind: 'peer', plugin: 'someone-else' }, text: '[tamaclaudchi compact]' })
+  expect(other.consumed).toBeUndefined()
+
+  const live = { pid: 1, procStart: null, status: 'idle', waitingFor: null, tmux: null, job: null, name: null, isRemote: false, isElsewhere: false, cwd: null, startedMs: null, socket: null }
+  // Opus 5.5 auto-compacts at 967K: 900K is 93% of the way there, 725K 75%
+  const at = (tokens: number) => ({ ...withLive(parseSession('a', assistant('end_turn'), null, NOW, NOW), live), contextTokens: tokens })
+  const moods = new Map([['a', 'waiting' as const]])
+  expect(news([at(900_000)], moods, new Map([['a', 80]])).full.map(s => s.id)).toEqual(['a']) // 93%, past 90
+  expect(news([at(900_000)], moods, new Map([['a', 92]])).full).toEqual([]) // announced already
+  expect(news([at(725_000)], moods, new Map([['a', 70]])).full).toEqual([]) // 75%
+  expect(news([at(900_000)], moods, null).full).toEqual([]) // the first poll: old news
+  settings.contextAlertPct = 0
+  expect(news([at(900_000)], moods, new Map([['a', 80]])).full).toEqual([]) // turned off
+  settings.contextAlertPct = 90
+})
+
+test('the shelf groups its running pets by the one talked to last, mood, repo, or model', async () => {
+  const live = { pid: 1, procStart: null, status: 'idle', waitingFor: null, tmux: null, job: null, name: null, isRemote: false, isElsewhere: false, cwd: null, startedMs: null, socket: null }
+  const pet = (id: string, repo: string, model: string, ago: number, status = 'idle') =>
+    ({ ...withLive(parseSession(id, assistant('end_turn', model), null, NOW - ago, NOW), { ...live, status }), repo })
+  const pets = [pet('me', 'acorn', 'claude-opus-5-5', 50), pet('x', 'acorn', 'claude-haiku-5-5', 10, 'busy'), pet('y', 'bramble', 'claude-opus-5-5', 5, 'waiting')]
+  const looks = outfits(pets)
+  const rows = (by: Parameters<typeof groupPets>[2]) => groupPets(pets, 'me', by, looks).map(g => `${g.label}: ${g.pets.map(s => s.id).join(' ')}`)
+  expect(rows('mood')).toEqual(['Working: x', 'Needs approval: y', 'Idle: me'])
+  // your own pet ahead in its row; the repo at work latest first
+  expect(rows('repo')).toEqual(['bramble: y', 'acorn: me x'])
+  expect(rows('model')).toEqual(['Opus: me y', 'Haiku: x'])
+  expect(rows('recent')).toEqual(['Last talked to first: y x me'])
+  // the one you typed to last comes first, however busy the others are
+  pets[0]!.lastPromptMs = NOW - 1
+  expect(rows('recent')).toEqual(['Last talked to first: me y x'])
+  expect(GROUPINGS.map(g => g.by)).toEqual(['recent', 'mood', 'repo', 'model'])
+})
+
+test('a colour you choose for a repo is swapped with the repo that had it, so no two share one', async () => {
+  const kept = { 'repo:a': [1, 0], 'repo:b': [4, 0] } as Record<string, [number, number]>
+  expect(chooseSlot(kept, 'repo:a', 4, NOW)).toEqual({ 'repo:a': [4, NOW], 'repo:b': [1, NOW] })
+  expect(chooseSlot(kept, 'repo:a', 7, NOW)).toEqual({ 'repo:a': [7, NOW], 'repo:b': [4, 0] })
+  // a repo given no colour yet: the one that had it gets a fresh one at the next read
+  expect(chooseSlot(kept, 'repo:c', 1, NOW)).toEqual({ 'repo:b': [4, 0], 'repo:c': [1, NOW] })
+})
+
+test('the context is counted to where Claude Code auto-compacts: the window less 20K for the reply and 13K for the summary', async () => {
+  const none = { env: null, byModel: {}, all: null }
+  // a native 1M window: about 967K, as Claude Code's docs say
+  for (const model of ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-opus-4-7', 'claude-sonnet-5']) expect(compactAt(model, 0, none)).toBe(967_000)
+  // 200K: the 4.6 models without the long context, Haiku 4.5, older ones; a session past 200K had the long one
+  for (const model of ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001', 'claude-opus-4-1-20250805']) expect(compactAt(model, 0, none)).toBe(167_000)
+  expect(compactAt('claude-opus-4-6', 250_000, none)).toBe(967_000)
+  expect(compactAt('claude-sonnet-4-6[1m]', 0, none)).toBe(967_000)
+  // a window set narrows it, never widens it: the variable first, then the model's setting, then the top-level one
+  expect(compactAt('claude-opus-5-5', 0, { env: null, byModel: { 'claude-opus-5-5': 400_000 }, all: 600_000 })).toBe(367_000)
+  expect(compactAt('claude-sonnet-5-5', 0, { env: null, byModel: { 'claude-opus-5-5': 400_000 }, all: 600_000 })).toBe(567_000)
+  expect(compactAt('claude-opus-5-5', 0, { env: 300_000, byModel: { 'claude-opus-5-5': 400_000 }, all: null })).toBe(267_000)
+  expect(compactAt('claude-haiku-4-5-20251001', 0, { env: null, byModel: {}, all: 600_000 })).toBe(167_000)
+  // as the settings and the variable write a window
+  expect([windowOf(500_000), windowOf('500k'), windowOf('1M'), windowOf('auto'), windowOf('200'), windowOf(2_000_000)]).toEqual([500_000, 500_000, 1_000_000, null, null, null])
+})
+
+test("a project's settings lay over the user's, as Claude Code merges them: what a file sets wins, auto included", async () => {
+  const user = withSettings({ env: null, byModel: {}, all: null }, { autoCompactWindow: 600_000, modelSettings: { 'Claude-Opus-5-5': { autoCompactWindow: '400k' } } })
+  expect(user).toEqual({ env: null, byModel: { 'claude-opus-5-5': 400_000 }, all: 600_000 })
+  // the project's top-level setting: the opus one set by the user stands before it
+  const shared = withSettings(user, { autoCompactWindow: 300_000 })
+  expect(compactAt('claude-sonnet-5-5', 0, shared)).toBe(267_000)
+  expect(compactAt('claude-opus-5-5', 0, shared)).toBe(367_000)
+  // the local file sets opus back to auto: the full window, not the top-level one
+  const local = withSettings(shared, { modelSettings: { 'claude-opus-5-5': { autoCompactWindow: 'auto' } } })
+  expect(compactAt('claude-opus-5-5', 0, local)).toBe(967_000)
+  // a file that says nothing changes nothing; the variable still wins over all
+  expect(withSettings(local, null)).toEqual(local)
+  expect(compactAt('claude-opus-5-5', 0, { ...local, env: 200_000 })).toBe(167_000)
+})
+
+test('the whole conversation: what each compaction dropped, each counted once however often it is read', async () => {
+  const into = new Map<string, number>()
+  const lines = 'K 2026-10-27T11:52:20.846Z 94764 37483\nU msg_1 x\nK 2026-10-27T11:56:18.038Z 62819 -\nK - 1 1'
+  readCompacts(lines, into)
+  readCompacts(lines, into)
+  expect([...into.values()]).toEqual([57_281, 62_819])
 })

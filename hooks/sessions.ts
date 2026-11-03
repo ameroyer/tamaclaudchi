@@ -17,9 +17,12 @@ export const petName = (s: TamaSession) => s.title || s.repo
 /** Closed, or quiet for hours: drawn faded. */
 export const isAsleep = (s: TamaSession, now: number) => !s.live || now - s.mtimeMs > ASLEEP_MS
 
-/** Running, its turn over, and left waiting on you for `sadMs` (0: never), but not yet asleep. */
-export const isSad = (s: TamaSession, now: number, sadMs: number) =>
-  !!s.live && sadMs > 0 && s.mood === 'waiting' && now - s.mtimeMs > sadMs && !isAsleep(s, now)
+/** Running and stuck on you (a permission prompt): sad for as long as it lasts. */
+export const isSad = (s: TamaSession) => !!s.live && s.mood === 'needs'
+
+/** Running, its turn over, and left idle for `sleepyMs` (0: never): never sad, only sleepy. */
+export const isSleepy = (s: TamaSession, now: number, sleepyMs: number) =>
+  !!s.live && sleepyMs > 0 && (s.mood === 'waiting' || s.mood === 'idle') && now - s.mtimeMs > sleepyMs
 
 type Entry = {
   type?: string
@@ -159,6 +162,8 @@ export function parseSession(
     recent: recent.slice(-(opts.recent ?? RECENT)),
     subagents: 0,
     subagentsEver: 0,
+    compactions: 0,
+    droppedTokens: 0,
     disk: null,
     spend: null,
     mail: null,
@@ -196,9 +201,82 @@ export function rederive(s: TamaSession, now: number): TamaSession {
   return s
 }
 
-/** The window a model's context is drawn against: 1M once past 200K, else 200K. */
-export function contextWindow(tokens: number): number {
-  return tokens > 200_000 ? 1_000_000 : 200_000
+/** Models whose context window is 1M natively: Fable, Mythos, Opus 4.7 and later, Sonnet 5 and later, Haiku 5.5. */
+const NATIVE_1M = /claude-(fable|mythos|opus-(4-[7-9]|[5-9])|sonnet-[5-9]|haiku-[5-9])/
+
+/**
+ * A model's context window as Claude Code takes it: 1M for those above, or a
+ * `[1m]` one; 200K for the rest (Opus and Sonnet 4.6 without the long context,
+ * Haiku 4.5), unless the session has grown past 200K, which only a long
+ * context allows.
+ */
+export function modelWindow(model: string | null, tokens = 0): number {
+  const id = (model ?? '').toLowerCase()
+  return NATIVE_1M.test(id) || id.includes('[1m]') || tokens > 200_000 ? 1_000_000 : 200_000
+}
+
+/**
+ * What can narrow Claude Code's auto-compact window: `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
+ * then the `autoCompactWindow` setting of the model (`modelSettings`), then the top-level one.
+ */
+export type CompactWindows = { env: number | null; byModel: Record<string, number | null>; all: number | null }
+export const NO_WINDOWS: CompactWindows = { env: null, byModel: {}, all: null }
+
+/**
+ * Where Claude Code auto-compacts a session, in tokens, as it reckons it: its
+ * window (the model's, or the one set, never wider), less what it keeps for
+ * the reply (20K) and for the summary (13K). About 967K for a 1M model.
+ */
+export function compactAt(model: string | null, tokens: number, w: CompactWindows = NO_WINDOWS): number {
+  const full = modelWindow(model, tokens)
+  const key = (model ?? '').toLowerCase().split('[')[0]!.replace(/-\d{8}$/, '')
+  // a model's own setting, `auto` (null) included, before the top-level one
+  const set = w.env ?? (key in w.byModel ? w.byModel[key] ?? null : w.all)
+  return Math.min(full, set ?? full) - 20_000 - 13_000
+}
+
+/** An `autoCompactWindow` as a setting or the variable gives it: tokens from 100K to 1M (`500000`, `500k`, `1M`), or null for `auto` and anything else. */
+export function windowOf(v: unknown): number | null {
+  const m = typeof v === 'number' ? [String(v), String(v), ''] : typeof v === 'string' ? /^\s*(\d+(?:\.\d+)?)\s*([km]?)\s*$/i.exec(v) : null
+  if (!m) return null
+  const n = Number(m[1]) * (m[2]!.toLowerCase() === 'k' ? 1000 : m[2]!.toLowerCase() === 'm' ? 1_000_000 : 1)
+  return n >= 100_000 && n <= 1_000_000 ? Math.round(n) : null
+}
+
+/** A settings file's part in the windows: `autoCompactWindow`, top-level and per model (`modelSettings`, as `/autocompact` writes it). */
+export type WindowSettings = { autoCompactWindow?: unknown; modelSettings?: Record<string, { autoCompactWindow?: unknown } | undefined> }
+
+/**
+ * The windows once a settings file is laid over those set below it (user,
+ * then the project's, then its local one), as Claude Code merges them: what
+ * the file sets wins, `auto` included; what it leaves out stands.
+ */
+export function withSettings(w: CompactWindows, set: WindowSettings | null): CompactWindows {
+  const byModel = { ...w.byModel }
+  for (const [model, m] of Object.entries(set?.modelSettings ?? {})) {
+    if (m && 'autoCompactWindow' in m) byModel[model.toLowerCase()] = windowOf(m.autoCompactWindow)
+  }
+  return { env: w.env, byModel, all: set && 'autoCompactWindow' in set ? windowOf(set.autoCompactWindow) : w.all }
+}
+
+/**
+ * The awk pass the read scripts run for each compaction, after USAGE_AWK
+ * (whose functions it uses): `K <timestamp> <tokens before> <tokens after>`,
+ * `-` for what the line lacks (older ones give no count after).
+ */
+export const COMPACT_AWK = String.raw`/"subtype":"compact_boundary"/ && /"compactMetadata":\{/ {
+  m = after($0, "\"compactMetadata\":{")
+  print "K", str(after($0, "\"timestamp\":\""), "^[0-9T:.Z+-]+", ""), num(m, "preTokens"), num(m, "postTokens")
+}`
+
+/** Reads the awk pass's `K` lines into what each compaction dropped, by its time: one read twice (a read backed up over it) is one. */
+export function readCompacts(text: string, into: Map<string, number>) {
+  for (const l of text.split('\n')) {
+    if (!l.startsWith('K ')) continue
+    const [, at, pre, post] = l.split(' ')
+    if (!at || at === '-' || !pre || pre === '-') continue
+    into.set(at, Math.max(0, Number(pre) - (post && post !== '-' ? Number(post) : 0)))
+  }
 }
 
 const MOOD_ORDER: Record<Mood, number> = { busy: 0, needs: 1, waiting: 2, idle: 3 }

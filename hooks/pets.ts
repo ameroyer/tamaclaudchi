@@ -99,6 +99,22 @@ export function stickySlots(keys: string[], count: number, kept: Record<string, 
   return out
 }
 
+/**
+ * A key given the slot you chose for it: the key that held that slot takes
+ * the chosen key's old one in exchange, so two keys still never share a slot.
+ */
+export function chooseSlot(kept: Record<string, [number, number]>, key: string, slot: number, now: number) {
+  const out = { ...kept }
+  const was = out[key]?.[0]
+  for (const [k, [held]] of Object.entries(kept)) {
+    if (k === key || held !== slot) continue
+    if (was === undefined) delete out[k]
+    else out[k] = [was, now]
+  }
+  out[key] = [slot, now]
+  return out
+}
+
 export type Outfit = { skin: Skin; hat: string | null; item: string; isEgg: boolean }
 
 /**
@@ -167,11 +183,15 @@ function lerp(a: string, b: string, t: number): string {
   return '#' + ((ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).padStart(6, '0')
 }
 
-type DrawOpts = { faded?: boolean; halo?: boolean; sad?: boolean }
+type DrawOpts = { faded?: boolean; halo?: boolean; sad?: boolean; sleepy?: boolean }
 
-// A pet left waiting on you: heavy lids (the lower half of each eye), a frown, a tear.
+// A pet stuck on you: heavy lids (the lower half of each eye), a frown, a tear.
 const FROWN: Cell[] = [[8, 9, 'E'], [9, 9, 'E'], [7, 10, 'E'], [10, 10, 'E']]
 const TEAR: Cell[] = [[6, 8, 'C'], [6, 9, 'c']]
+// A pet left idle for long: eyes shut in a line, and a z floating up by its
+// head, on the left (its held item takes the right), in the room above it.
+const SHUT_EYES: Cell[] = [[5, 7, 'E'], [6, 7, 'E'], [11, 7, 'E'], [12, 7, 'E']]
+const ZZZ: Cell[] = [[0, -2, 'W'], [1, -2, 'W'], [2, -2, 'W'], [1, -1, 'W'], [0, 0, 'W'], [1, 0, 'W'], [2, 0, 'W']]
 
 /** Draws the pet into a PET_W x height grid, `top` pixel rows down from its edge. */
 function draw(o: Outfit, pose: Pose, height: number, top: number, opts: DrawOpts): Int32Array {
@@ -183,8 +203,9 @@ function draw(o: Outfit, pose: Pose, height: number, top: number, opts: DrawOpts
   const body = at(pose.dx ?? 0, pose.dy ?? 0)
   const held = at((pose.dx ?? 0) + (pose.itemDx ?? 0), (pose.dy ?? 0) + (pose.itemDy ?? 0))
   const paint = (role: string | undefined) => CLR[role || ''] || o.skin.body
-  // a blink keeps only the lower half of each pupil
-  const eyes = pose.blink || (opts.sad && !o.isEgg) ? EYES.filter(([, y]) => y === 7) : EYES
+  // a blink keeps only the lower half of each pupil; asleep, they shut
+  const eyes = opts.sleepy && !o.isEgg ? SHUT_EYES
+    : pose.blink || (opts.sad && !o.isEgg) ? EYES.filter(([, y]) => y === 7) : EYES
   if (o.isEgg) {
     EGG.forEach(([x, y]) => body(x, y, o.skin.body))
     EGG_SPECKLES.forEach(([x, y, r]) => body(x, y, paint(r)))
@@ -196,6 +217,7 @@ function draw(o: Outfit, pose: Pose, height: number, top: number, opts: DrawOpts
     ;(ITEM_HALO[o.item] || []).forEach(([x, y]) => held(x, y, o.skin.outline))
     ;(ITEM[o.item] || []).forEach(([x, y, r]) => held(x, y, paint(r)))
     if (opts.sad) [...FROWN, ...TEAR].forEach(([x, y, r]) => body(x, y, paint(r)))
+    else if (opts.sleepy) ZZZ.forEach(([x, y, r]) => body(x, y, paint(r)))
   }
   // sparkles, a letter: an egg gets its letters too
   ;(pose.extra || []).forEach(([x, y, r]) => held(x, y, paint(r)))
@@ -244,7 +266,7 @@ const REST_KEPT = 500
 
 /** The pet at rest, in the same box the hover frames use (room to hop). */
 export function petRest(o: Outfit, opts: DrawOpts = {}): RasterCells {
-  const key = JSON.stringify([o, opts.faded ?? false, opts.halo ?? false, opts.sad ?? false])
+  const key = JSON.stringify([o, opts.faded ?? false, opts.halo ?? false, opts.sad ?? false, opts.sleepy ?? false])
   const hit = restCells.get(key)
   if (hit) return hit
   if (restCells.size >= REST_KEPT) restCells.clear()
