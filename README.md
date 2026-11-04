@@ -92,13 +92,15 @@ the conversation, and a box to message it. From the eleventh on, Tab to it, or
 `j` for the next that needs you. A name too long for its card shows whole
 at the bottom right, by the footer's faces, while you hover anywhere on the card.
 
-While something you pressed takes a moment (a kill, a hatch, a resurrect, an
-attach, a clean-up), an egg rocks at the bottom right and says what it is
-doing, until it is done.
+While something takes a moment (a kill, a hatch, a resurrect, an attach, a
+clean-up, or the first read of every transcript after a start or a plugin
+reload), an egg rocks at the bottom right and says what it is doing, until it
+is done; an empty shelf says so too while it waits for that first read.
 
-The shelf puts the pet you last typed to first (or its birth, for one you have
-not talked to yet), so a pet at work doesn't jump ahead of the one you're
-working with; `o` sorts it by mood, repo or model instead, kept for next time.
+The shelf puts its pets in rows by mood, and in each row the pet you last
+typed to first (or its birth, for one you have not talked to yet), so a pet at
+work doesn't jump ahead of the one you're working with; `o` sorts it by repo,
+by model or A to Z instead, kept for next time.
 
 Past 12 running pets the shelf is crowded, and changes to fit:
 
@@ -121,7 +123,7 @@ number keys go to the first ten of those.
 | `m` | your sessions' conversations with each other | |
 | `j` | go to the next pet that needs you, the longest stuck first (also `/tama-next`, from any session) | |
 | `t` | broadcast: one message from this session to every other running pet, or those of one repo | |
-| `o` | the pet talked to last first, or rows by mood, by repo, by model | |
+| `o` | rows by mood (the pet talked to last first), by repo, by model, or A to Z | |
 | `v` | cards or faces (a line each) | |
 | `f` | filter the running pets | |
 | `w` | show or fold the sleepy pets (a crowded shelf) | |

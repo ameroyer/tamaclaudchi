@@ -710,7 +710,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
       viewport: { columns: 140, rows: 40 },
     })
     expect(await ui.find({ type: 'Text', text: /★ you/ })).toBeDefined() // your card, where others have their jump button
-    expect(await ui.find({ type: 'Text', text: /Last talked to first/ })).toBeDefined() // one row, the pet talked to last first
+    expect(await ui.find({ type: 'Text', text: /^(Working|Idle)\b/ })).toBeDefined() // rows by mood, the pet talked to last first in each
     expect(await ui.find({ type: 'Text', text: /Waiting for you/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /born 3h ago/ })).toBeDefined()
     expect(await ui.find({ key: 'home-b' })).toBeDefined()
@@ -720,8 +720,8 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     // no pill on the cards; b has two subagents at work
     expect(await ui.find({ type: 'Text', text: /needs you/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^2 subagents working$/ })).toBeDefined()
-    // the row is not by mood, so a card says working or waiting for you, before what it once launched
-    expect(await ui.find({ type: 'Text', text: /^(● working|◌ waiting for you)$/ })).toBeDefined()
+    // the row is by mood, so a card need not say working or waiting for you
+    expect(await ui.find({ type: 'Text', text: /^(● working|◌ waiting for you)$/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^3 subagents launched$/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^· 3 running across 3 folders$/ })).toBeDefined() // you, b here, e on another machine
     // what Claude keeps on disk, red past 10 GB, and b's share on its card
@@ -933,10 +933,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     // on its card, its subagents at work come first: no compact in the middle of them
     expect(await ui.find({ key: 'compact-b' })).toBeUndefined()
 
-    // the shelf's rows: the one talked to last first, then by mood, repo, model, and back
-    expect((await ui.find({ key: 'group' }))?.props.label).toBe('⇅ last talked to first')
-    expect(JSON.stringify(await ui.drawn())).toContain('"Last talked to first"," "')
-    await ui.press({ key: 'group' })
+    // the shelf's rows: by mood, then by repo, model, A to Z, and back
     expect((await ui.find({ key: 'group' }))?.props.label).toBe('⇅ by mood')
     expect(await ui.find({ type: 'Text', text: /Needs approval/ })).toBeDefined()
     await ui.press({ key: 'group' })
@@ -947,7 +944,9 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     expect(JSON.stringify(await ui.drawn())).toContain('"Haiku"," "')
     expect(JSON.stringify(await ui.drawn())).toContain('"Opus"," "')
     await ui.press({ key: 'group' })
-    expect(JSON.stringify(await ui.drawn())).toContain('"Last talked to first"," "')
+    expect(JSON.stringify(await ui.drawn())).toContain('"A to Z"," "')
+    await ui.press({ key: 'group' })
+    expect((await ui.find({ key: 'group' }))?.props.label).toBe('⇅ by mood')
 
     // the next pet stuck on you, one press away: b, in its tmux pane
     expect((await ui.find({ key: 'next' }))?.props.label).toBe('▲ next that needs you · 1')
@@ -973,7 +972,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     expect(toasts.at(-1)).toContain('From Mine to 1 pet: Other one')
     expect(await ui.find({ key: 'broadcast-text' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /★ you/ })).toBeDefined() // your card, where others have their jump button
-    expect(await ui.find({ type: 'Text', text: /Last talked to first/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^(Working|Idle)\b/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /Waiting for you/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /born 3h ago/ })).toBeDefined()
     expect(await ui.find({ key: 'home-b' })).toBeDefined()
@@ -1031,7 +1030,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     await ui.press({ key: 'kill' })
     expect(ran.some(a => a[1] === 'kill-pane' || a[1] === 'kill-session')).toBe(false)
     paneOwner = '20\n'
-    expect(await ui.find({ type: 'Text', text: /Last talked to first/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^(Working|Idle)\b/ })).toBeDefined()
     await ui.unmount()
   }
   // a poll reads no registry entry it has read before, and checks no process it saw end
@@ -1364,22 +1363,26 @@ test('a compact asked from another shelf runs /compact here; a context filling p
   settings.contextAlertPct = 90
 })
 
-test('the shelf groups its running pets by the one talked to last, mood, repo, or model', async () => {
+test('the shelf groups its running pets by mood (the one talked to last first), repo, model, or name', async () => {
   const live = { pid: 1, procStart: null, status: 'idle', waitingFor: null, tmux: null, job: null, name: null, isRemote: false, isElsewhere: false, cwd: null, startedMs: null, socket: null }
   const pet = (id: string, repo: string, model: string, ago: number, status = 'idle') =>
     ({ ...withLive(parseSession(id, assistant('end_turn', model), null, NOW - ago, NOW), { ...live, status }), repo })
-  const pets = [pet('me', 'acorn', 'claude-opus-5-5', 50), pet('x', 'acorn', 'claude-haiku-5-5', 10, 'busy'), pet('y', 'bramble', 'claude-opus-5-5', 5, 'waiting')]
+  const pets = [pet('me', 'acorn', 'claude-opus-5-5', 50), pet('x', 'acorn', 'claude-haiku-5-5', 10, 'busy'), pet('y', 'bramble', 'claude-opus-5-5', 5, 'waiting'), pet('w', 'clover', 'claude-opus-5-5', 1, 'busy')]
   const looks = outfits(pets)
   const rows = (by: Parameters<typeof groupPets>[2]) => groupPets(pets, 'me', by, looks).map(g => `${g.label}: ${g.pets.map(s => s.id).join(' ')}`)
-  expect(rows('mood')).toEqual(['Working: x', 'Needs approval: y', 'Idle: me'])
+  expect(rows('mood')).toEqual(['Working: w x', 'Needs approval: y', 'Idle: me'])
   // your own pet ahead in its row; the repo at work latest first
-  expect(rows('repo')).toEqual(['bramble: y', 'acorn: me x'])
-  expect(rows('model')).toEqual(['Opus: me y', 'Haiku: x'])
-  expect(rows('recent')).toEqual(['Last talked to first: y x me'])
-  // the one you typed to last comes first, however busy the others are
-  pets[0]!.lastPromptMs = NOW - 1
-  expect(rows('recent')).toEqual(['Last talked to first: me y x'])
-  expect(GROUPINGS.map(g => g.by)).toEqual(['recent', 'mood', 'repo', 'model'])
+  expect(rows('repo')).toEqual(['clover: w', 'bramble: y', 'acorn: me x'])
+  expect(rows('model')).toEqual(['Opus: me w y', 'Haiku: x'])
+  // within a mood, the one you typed to last comes first, however recently the others wrote
+  pets[1]!.lastPromptMs = NOW
+  expect(rows('mood')).toEqual(['Working: x w', 'Needs approval: y', 'Idle: me'])
+  pets[3]!.title = 'apple'
+  pets[1]!.title = 'Zebra'
+  pets[2]!.title = 'mango'
+  pets[0]!.title = 'Banana 10'
+  expect(rows('name')).toEqual(['A to Z: w me y x'])
+  expect(GROUPINGS.map(g => g.by)).toEqual(['mood', 'repo', 'model', 'name'])
 })
 
 test('a crowded shelf puts the pets that need you first, folds the sleepy ones, and narrows to a filter', async () => {
@@ -1392,24 +1395,24 @@ test('a crowded shelf puts the pets that need you first, folds the sleepy ones, 
     ...Array.from({ length: 10 }, (_, n) => pet(`p${n}`, n % 2 ? 'acorn' : 'bramble', 60_000))]
   pets[1]!.mood = 'needs'
   const looks = outfits(pets)
-  const ids = (o: { filter: string; showSleepy: boolean }, by: 'recent' | 'mood' = 'recent') =>
+  const ids = (o: { filter: string; showSleepy: boolean }, by: 'name' | 'mood' = 'name') =>
     arrangeShelf(pets, 'me', by, looks, NOW, o).groups.map(g => `${g.label}: ${g.pets.length}`)
-  const all = arrangeShelf(pets, 'me', 'recent', looks, NOW, { filter: '', showSleepy: false })
+  const all = arrangeShelf(pets, 'me', 'name', looks, NOW, { filter: '', showSleepy: false })
   expect(all.isCrowded).toBe(true)
   expect(all.sleepy.map(s => s.id)).toEqual(['zz1', 'zz2', 'zz3'])
-  expect(ids({ filter: '', showSleepy: false })).toEqual(['▲ Needs you: 1', 'Last talked to first: 11'])
+  expect(ids({ filter: '', showSleepy: false })).toEqual(['▲ Needs you: 1', 'A to Z: 11'])
   // unfolded, the sleepy ones are back in the row
-  expect(ids({ filter: '', showSleepy: true })).toEqual(['▲ Needs you: 1', 'Last talked to first: 14'])
+  expect(ids({ filter: '', showSleepy: true })).toEqual(['▲ Needs you: 1', 'A to Z: 14'])
   // by mood, the mood rows already put them first
   expect(ids({ filter: '', showSleepy: false }, 'mood')[0]).toBe('Working: 1')
   // a filter over repo, name, branch or folder; the count is of all that match
-  const narrowed = arrangeShelf(pets, 'me', 'recent', looks, NOW, { filter: 'bramble', showSleepy: false })
+  const narrowed = arrangeShelf(pets, 'me', 'name', looks, NOW, { filter: 'bramble', showSleepy: false })
   expect(narrowed.matched).toBe(6)
   expect(narrowed.groups.flatMap(g => g.pets).every(s => s.repo === 'bramble')).toBe(true)
   // a face line's word of status
   expect([faceStatus(pets[1]!, NOW), faceStatus(pets[2]!, NOW), faceStatus({ ...pets[5]!, subagents: 37 }, NOW)]).toEqual(['needs you', 'zzz', '⚙×37'])
   // few pets: nothing folded, nothing pinned
-  expect(arrangeShelf(pets.slice(0, 5), 'me', 'recent', looks, NOW, { filter: '', showSleepy: false }).groups.map(g => g.label)).toEqual(['Last talked to first'])
+  expect(arrangeShelf(pets.slice(0, 5), 'me', 'name', looks, NOW, { filter: '', showSleepy: false }).groups.map(g => g.label)).toEqual(['A to Z'])
 })
 
 test('a colour you choose for a repo is swapped with the repo that had it, so no two share one', async () => {

@@ -55,7 +55,7 @@ const version = atom({ plugin: 'tamaclaudchi', key: 'version' } as const, '')
 const graveQuery = atom({ plugin: 'tamaclaudchi', key: 'graveQuery' } as const, '')
 const showClosed = atom({ plugin: 'tamaclaudchi', key: 'showClosed' } as const, false)
 const isOpen = atom({ plugin: 'tamaclaudchi', key: 'isOpen' } as const, false)
-const groupBy = atom({ plugin: 'tamaclaudchi', key: 'groupBy' } as const, 'recent' as Grouping)
+const groupBy = atom({ plugin: 'tamaclaudchi', key: 'groupBy' } as const, 'mood' as Grouping)
 const isBroadcasting = atom({ plugin: 'tamaclaudchi', key: 'isBroadcasting' } as const, false)
 const broadcastTo = atom({ plugin: 'tamaclaudchi', key: 'broadcastTo' } as const, 'all')
 const hatch = atom({ plugin: 'tamaclaudchi', key: 'hatch' } as const, NO_HATCH as Hatch)
@@ -910,8 +910,8 @@ export async function refresh($: EngineInterface, opts: { everyMs?: number } = {
     return
   }
   isReading = true
-  try {
-    // a loop, not a call to itself: the directory's scan follows no cycles
+  // a loop, not a call to itself: the directory's scan follows no cycles
+  const loop = async () => {
     for (let next: { everyMs?: number } | null = opts; next; ) {
       hasMore = false
       await readOnce($, next)
@@ -919,10 +919,18 @@ export async function refresh($: EngineInterface, opts: { everyMs?: number } = {
       next = askedAgain ?? (hasMore ? next : null)
       askedAgain = null
     }
+  }
+  try {
+    // the first read after a start or a reload takes seconds: the egg rocks meanwhile
+    if (isWarm) await loop()
+    else await busy($, WAKING, loop).then(() => { isWarm = true })
   } finally {
     isReading = false
   }
 }
+/** This copy of the module has read the shelf once (a reload starts over). */
+let isWarm = false
+const WAKING = 'waking your pets'
 
 // An error said once in the conversation; again only in the debug log, so a
 // poll failing every few seconds does not fill the transcript with rows.
@@ -2166,8 +2174,8 @@ async function busy<T>($: EngineInterface, label: string, f: () => Promise<T>): 
   }
 }
 
-/** The egg's two frames: it rocks while a press is being carried out. */
-const EGG = ['🥚 ', ' 🥚']
+/** The egg's frames while something is being carried out: it rocks, rocks, and hatches, over and over until the work is done. */
+const EGG = ['🥚 ', ' 🥚', '🥚 ', ' 🥚', '🐣 ']
 /** Names longer than a card shows; the footer's name slot is at most this wide. */
 const TAG_W = 40
 
@@ -2216,7 +2224,7 @@ export async function renderFooter($: EngineInterface, e: RenderInput<'SessionMo
       {more ? <Text dimColor>+{more} </Text> : null}
       {asleep.length ? <Text dimColor>{awake.length ? '· ' : ''}{DOZE[frame % 2]} ×{asleep.length}</Text> : null}
       {/* something pressed is under way: the egg rocks until it is done */}
-      {busyWith.length ? <Text dimColor>{list.length ? ' · ' : ''}{EGG[frame % 2]} {busyWith[0]}…</Text> : null}
+      {busyWith.length ? <Text dimColor>{list.length ? ' · ' : ''}{EGG[frame % EGG.length]} {busyWith[0]}…</Text> : null}
     </Box>
   )
 }
@@ -2388,7 +2396,7 @@ export function searchGraves(closed: TamaSession[], query: string): { found: Tam
 
 /** The shelf's groupings, in the order `o` goes through them, and what its button says of each. */
 export const GROUPINGS: { by: Grouping; label: string }[] = [
-  { by: 'recent', label: 'last talked to first' }, { by: 'mood', label: 'by mood' }, { by: 'repo', label: 'by repo' }, { by: 'model', label: 'by model' },
+  { by: 'mood', label: 'by mood' }, { by: 'repo', label: 'by repo' }, { by: 'model', label: 'by model' }, { by: 'name', label: 'A to Z' },
 ]
 const FAMILIES = ['fable', 'opus', 'sonnet', 'haiku', 'other']
 const latest = (pets: TamaSession[]) => Math.max(...pets.map(s => s.mtimeMs))
@@ -2401,14 +2409,14 @@ const latest = (pets: TamaSession[]) => Math.max(...pets.map(s => s.mtimeMs))
 export const talkedAt = (s: TamaSession) => Math.max(s.lastPromptMs ?? 0, s.bornMs ?? 0) || s.mtimeMs
 
 /**
- * The running pets in rows: all in one row, the one you talked to last first
- * (the default), or by mood (working, stuck on you, idle), by repo (the one
- * at work latest first), by model. Within a row, the latest at work first,
- * and your own pet ahead of them but in the first.
+ * The running pets in rows: by mood (working, stuck on you, idle; the
+ * default), each row the one you talked to last first; by repo (the one at
+ * work latest first) or by model, each row the latest at work first and your
+ * own pet ahead; or all in one row by name, A to Z.
  */
 export function groupPets(alive: TamaSession[], mine: string | null, by: Grouping, looks: Map<string, Outfit>): { label: string; color: string; pets: TamaSession[] }[] {
   const order = (pets: TamaSession[]) => [...pets].sort((a, b) => Number(b.id === mine) - Number(a.id === mine) || b.mtimeMs - a.mtimeMs)
-  if (by === 'recent') return alive.length ? [{ label: 'Last talked to first', color: ACCENT, pets: [...alive].sort((a, b) => talkedAt(b) - talkedAt(a) || b.mtimeMs - a.mtimeMs) }] : []
+  if (by === 'name') return alive.length ? [{ label: 'A to Z', color: ACCENT, pets: [...alive].sort((a, b) => petName(a).localeCompare(petName(b), undefined, { sensitivity: 'base', numeric: true }) || a.id.localeCompare(b.id)) }] : []
   if (by === 'repo') {
     const repos = new Map<string, TamaSession[]>()
     for (const s of alive) repos.get(s.repo)?.push(s) ?? repos.set(s.repo, [s])
@@ -2419,7 +2427,8 @@ export function groupPets(alive: TamaSession[], mine: string | null, by: Groupin
     return FAMILIES.map(f => ({ label: f === 'other' ? 'Eggs' : MODEL_SKIN[f]!.label, color: MODEL_SKIN[f]!.body, pets: order(alive.filter(s => modelFamily(s.model) === f)) }))
       .filter(g => g.pets.length)
   }
-  return GROUPS.map(g => ({ label: g.label, color: g.color, pets: order(alive.filter(s => g.moods.includes(s.mood))) })).filter(g => g.pets.length)
+  const byTalk = (pets: TamaSession[]) => pets.sort((a, b) => talkedAt(b) - talkedAt(a) || b.mtimeMs - a.mtimeMs)
+  return GROUPS.map(g => ({ label: g.label, color: g.color, pets: byTalk(alive.filter(s => g.moods.includes(s.mood))) })).filter(g => g.pets.length)
 }
 
 /** Past this many running pets the shelf is crowded: faces rather than cards, the ones needing you first, the sleepy ones folded. */
@@ -2606,6 +2615,8 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
         k.twoPress('clean-all', 'x', CLEAN_ALL, `clean every closed pet's temp folder (${bytes(cleanKb)} in ${toClean.length})`,
           `delete ${bytes(cleanKb)} of temp files from ${plural(toClean.length, 'closed pet')} (transcripts stay)`, () => void cleanAll($, closed))
       ) : null}
+      {!groups.length && !isGraveOpen && (await read($, doing)).includes(WAKING)
+        ? <Box key="waking" marginTop={1}><Text dimColor>🥚 waking your pets… (reading every transcript, a few seconds)</Text></Box> : null}
       {groups.map(g => (
         <Box key={`group-${g.label}`} flexDirection="column" marginTop={1}>
           <Text bold color={g.color}>{g.label} <Text dimColor>· {g.pets.length}</Text></Text>
@@ -2913,7 +2924,7 @@ function helpPage($: EngineInterface, e: PaneEvent, v: View) {
         row('s', 'credit usage: what your pets would cost at API prices'),
       ])}
       {section('Shortcuts: arranging the shelf', [
-        row('o', 'sort: last talked to, mood, repo or model'),
+        row('o', 'sort: by mood (last talked to first), repo, model, or A to Z'),
         row('v', 'cards or faces, a line each'),
         row('f', 'filter by name, repo, branch or folder'),
         row('w', 'show or fold the sleepy pets on a crowded shelf'),
@@ -3470,7 +3481,7 @@ export const register: Register = (on, options) => {
     await update($, sessions, () => [])
     // the shelf's grouping, as last chosen on this machine
     const by = await $.store.get(GROUPING_KEY).catch(() => undefined)
-    await update($, groupBy, () => (GROUPINGS.some(g => g.by === by) ? by as Grouping : 'recent'))
+    await update($, groupBy, () => (GROUPINGS.some(g => g.by === by) ? by as Grouping : 'mood'))
     // and its cards or faces, as last chosen
     const dense = await $.store.get(DENSITY_KEY).catch(() => undefined)
     await update($, density, () => (dense === 'cards' || dense === 'faces' ? dense : 'auto'))

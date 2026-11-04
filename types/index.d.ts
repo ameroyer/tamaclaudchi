@@ -104,8 +104,8 @@ export type Spend = {
   days: Record<string, number>
 }
 
-/** How the shelf puts its running pets in rows: by mood, repo or model, or one row, the latest first. */
-export type Grouping = 'mood' | 'repo' | 'model' | 'recent'
+/** How the shelf puts its running pets in rows: by mood (each row the one talked to last first), repo or model, or one row by name. */
+export type Grouping = 'mood' | 'repo' | 'model' | 'name'
 
 /**
  * The new-pet form: its folder (null: this session's), a first prompt, a
