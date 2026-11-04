@@ -187,6 +187,10 @@ declare module 'claude-code' {
       convoShown: number
       /** The spend page is open in place of the shelf. */
       showSpend: boolean
+      /** The help page is open in place of the shelf. */
+      showHelp: boolean
+      /** What this session is busy doing for you (a kill, a hatch…), each while it lasts: the footer's egg shakes meanwhile. */
+      doing: string[]
       /** This copy of the mod's version, from its plugin.json. */
       version: string
       /** The opened pet's git section is unfolded (folded each time a pet opens). */
@@ -225,6 +229,16 @@ declare module 'claude-code' {
       folderHints: { for: string | null; dirs: string[] }
       /** The pet whose page shows the colours its repo can take, or null. */
       pickingColour: string | null
+      /** How the shelf draws its pets: big cards, a line of face and name each, or the one that fits how many there are. */
+      density: 'auto' | 'cards' | 'faces'
+      /** What the shelf's running pets are narrowed to (name, repo, branch or folder); empty for all. */
+      shelfFilter: string
+      /** The shelf's filter field is open. */
+      isFiltering: boolean
+      /** The sleepy pets, folded into one row on a crowded shelf, are unfolded. */
+      showSleepy: boolean
+      /** How many more subagents than the setting the opened pet's page shows. */
+      agentsMore: number
     }
   }
 }

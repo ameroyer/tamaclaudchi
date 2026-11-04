@@ -90,21 +90,41 @@ Click a pet (or press its number: 1 to 9, then 0 for the tenth) to open its
 page: its subagents, git activity, its messages to and from other sessions,
 the conversation, and a box to message it. From the eleventh on, Tab to it, or
 `j` for the next that needs you. A name too long for its card shows whole
-while you hover it.
+at the bottom right, by the footer's faces, while you hover anywhere on the card.
+
+While something you pressed takes a moment (a kill, a hatch, a resurrect, an
+attach, a clean-up), an egg rocks at the bottom right and says what it is
+doing, until it is done.
 
 The shelf puts the pet you last typed to first (or its birth, for one you have
 not talked to yet), so a pet at work doesn't jump ahead of the one you're
 working with; `o` sorts it by mood, repo or model instead, kept for next time.
 
+Past 12 running pets the shelf is crowded, and changes to fit:
+
+- each pet is a line of its own, not a card: its face (waving at work, a red
+  `!` when it needs you, dozing when idle) in its repo's colour, a word of
+  status (`⚙×37` for its subagents at work), its whole name and its repo; `v` switches between cards and
+  faces at any size, kept for next time;
+- the pets that need you get a row of their own, first;
+- the sleepy ones fold into one line, `w` to show them.
+
+`f` narrows the shelf to the pets whose name, repo, branch or folder match; the
+number keys go to the first ten of those.
+
 | key | on the shelf | on a pet's page |
 |---|---|---|
+| `h` | a short help page: what a pet shows, and the keys worth knowing | |
 | `n` | hatch a new pet in a folder you pick | |
 | `g` | the graveyard: recently closed sessions | |
-| `s` | what the pets would cost at API prices | |
+| `s` | credit usage: what the pets would cost at API prices | |
 | `m` | your sessions' conversations with each other | |
 | `j` | go to the next pet that needs you, the longest stuck first (also `/tama-next`, from any session) | |
 | `t` | broadcast: one message from this session to every other running pet, or those of one repo | |
 | `o` | the pet talked to last first, or rows by mood, by repo, by model | |
+| `v` | cards or faces (a line each) | |
+| `f` | filter the running pets | |
+| `w` | show or fold the sleepy pets (a crowded shelf) | |
 | `b` | | back |
 | `a` | | attach: go to its tmux pane, or open its background session |
 | `r` | | resurrect it (`claude --bg --resume`, or in tmux) |
@@ -113,7 +133,8 @@ working with; `o` sorts it by mood, repo or model instead, kept for next time.
 | `c` | | copy its resume command |
 | `k` ×2 | | kill it (`claude stop` for a background one) |
 | `z` | | compact its context, once it is full past `contextAlertPercent` |
-| `x` ×2 | clean every closed pet's temp files (in the graveyard) | clean its temp files |
+| `x` ×2 | clean every closed pet's temp files (in the graveyard) | |
+| `d` ×2 | | clean up its temp files on disk (a closed pet) |
 
 Cleaning deletes only temp files: the transcript stays, so a pet can still be
 resurrected.
@@ -129,7 +150,8 @@ hold what you typed, then the folders that start with it (`~/Doc` offers
 without one, it opens for you to talk to.
 
 A pet's page shows its subagents however long ago they ran: the running ones
-first (all of them, however many), then the newest, `subagentsShown` (6) in all.
+first (all of them, however many), then the newest, `subagentsShown` (6) in all,
+and 20 more at each press. Past 12, each is a line rather than a card.
 
 When one session [messages another](https://code.claude.com/docs/en/cross-session-messaging),
 the sender throws a letter and the receiver catches it. Their messages show as

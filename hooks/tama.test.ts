@@ -9,7 +9,7 @@ import { costOf } from './pricing'
 import { vivid } from './format'
 import { MODEL_SKIN, REPO_SKINS } from './sprites'
 import { dayOf, readCalls, spendOf, type Call } from './spend'
-import { attachClient, canTellApart, followed, readLive, forgetProcesses, groupPets, GROUPINGS, hatchArgs, isRunning, jobOf, machineFrom, newMail, news, parentOf, searchGraves } from './register'
+import { arrangeShelf, attachClient, canTellApart, faceStatus, followed, readLive, forgetProcesses, groupPets, GROUPINGS, hatchArgs, isRunning, jobOf, machineFrom, newMail, news, parentOf, searchGraves } from './register'
 import { hasRecentMail, isFrom, mailEdges, postsOf, readMail, threadsOf, type MailFact } from './mail'
 import { mailFrames } from './pets'
 import { settings } from './config'
@@ -630,9 +630,9 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     if (e.argv[0] === 'sh' && e.argv[2]!.includes('-printf')) return ok(Object.keys(FILES).map(f =>
       `${(f.includes('/b.') ? now - 60_000 : f.includes('/c.') ? now - 2 * 3600_000 : now) / 1000}\t1\t${f}\n`).join(''))
     if (e.argv[0] === 'tmux') return ok('')
-    // b's subagents: two mid-task, one done, of five launched; `me` launched three, all done
-    if (e.argv[0] === 'sh' && e.argv[2]!.includes('agent-*.jsonl'))
-      return ok(e.argv.slice(4).map(d => `\x1e${d}\n${d.includes('/b/') ? 'T 5\n0\n0\n1\n' : d.includes('/me/') ? 'T       3\n' : 'T 0\n'}`).join(''))
+    // whether b's recent subagents have finished: a1 and a2 are mid-task, a3 and a4 done
+    if (e.argv[0] === 'sh' && e.argv[2]!.includes('SubagentHandback'))
+      return ok(e.argv.slice(4).map(f => `\x1e${f}\n${/agent-a[12]\.jsonl$/.test(f) ? 0 : 1}\n`).join(''))
     const paths = e.argv.slice(4)
     const stdout = paths.map(p => {
       const id = p.split('/').pop()!.replace('.jsonl', '')
@@ -680,13 +680,18 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     // the row is not by mood, so a card says working or waiting for you, before what it once launched
     expect(await ui.find({ type: 'Text', text: /^(● working|◌ waiting for you)$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^3 subagents launched$/ })).toBeUndefined()
-    expect(await ui.find({ type: 'Text', text: /^3 running pets across 3 folders$/ })).toBeDefined() // you, b here, e on another machine
+    expect(await ui.find({ type: 'Text', text: /^· 3 running across 3 folders$/ })).toBeDefined() // you, b here, e on another machine
     // what Claude keeps on disk, red past 10 GB, and b's share on its card
     expect((await ui.find({ type: 'Text', text: /^12\.8 GB$/ }))?.props.color).toBe('#ff5555')
     expect(await ui.find({ type: 'Text', text: /^5\.7G$/ })).toBeDefined()
     // which copy of the mod this is, as its plugin.json says
-    expect((await ui.find({ type: 'Text', text: /^v9\.8\.7 $/ }))?.props.color).toBe('#78dce8') // as its manifest says
-    expect(await ui.find({ type: 'Text', text: /^Legend: body = repo/ })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /^ v9\.8\.7$/ }))?.props.color).toBe('#78dce8') // as its manifest says
+    expect(await ui.find({ type: 'Text', text: /body = repo · hat = model · item = branch/ })).toBeDefined()
+    // the help page, and back
+    await ui.press({ key: 'help' })
+    expect(await ui.find({ type: 'Text', text: /^Reading a pet$/ })).toBeDefined()
+    await ui.press({ key: 'help-back' })
+    expect(await ui.find({ key: 'help' })).toBeDefined()
     // the shelf was read here, and left for the other sessions on this machine,
     // without what the sessions said
     expect(JSON.parse(written.get('/h/.claude/tamaclaudchi/lease-feedface00c0-v6.json') ?? '{}').by).toBe('me')
@@ -698,7 +703,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     expect(await ui.find({ key: 'wing-e' })).toBeUndefined()
     // what the pets spent: b's two calls, the one written twice counted once
     const callUsd = 1000 * 1e-6 + 500 * 5e-6
-    expect(JSON.stringify(await ui.drawn())).toContain(`$ spend · $${(2 * callUsd).toFixed(4)} today`)
+    expect(JSON.stringify(await ui.drawn())).toContain(`$ credit usage · $${(2 * callUsd).toFixed(4)} today`)
     await ui.press({ key: 'spend' })
     expect(await ui.find({ type: 'Text', text: /^By day$/ })).toBeDefined()
     expect(await ui.find({ key: 'spend-pet-b' })).toBeDefined()
@@ -813,15 +818,22 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     expect(gitOrder.indexOf('a fresh commit in another worktree')).toBeGreaterThan(-1)
     expect(gitOrder.indexOf('a fresh commit in another worktree')).toBeLessThan(gitOrder.indexOf('make the test less flaky'))
     // its subagents, as little pets: the running one first; one opens on its trace
-    expect(await ui.find({ type: 'Text', text: /^ · 1 working · the newest 6 of 8 · click one for its trace$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ · 1 working · 7 done · showing 6 of 8 · click one for its trace$/ })).toBeDefined()
     expect(await ui.find({ key: 'agent-a2' })).toBeDefined()
     // at most six (the setting's default): the running one, then the newest
     // finished ones, however long ago they ran; only those are read
     expect(await ui.find({ key: 'agent-a6' })).toBeDefined() // six days ago
     expect(await ui.find({ key: 'agent-a7' })).toBeUndefined()
-    expect(JSON.stringify(await ui.drawn())).toContain('the newest 6 of 8')
+    expect(JSON.stringify(await ui.drawn())).toContain('showing 6 of 8')
     const readAgents = ran.filter(a => a[0] === 'sh' && a[2]!.includes('meta.json')).at(-1)!
     expect(readAgents.slice(4).map(f => f.split('/').pop())).toEqual(['agent-a1.jsonl', 'agent-a2.jsonl', 'agent-a3.jsonl', 'agent-a4.jsonl', 'agent-a5.jsonl', 'agent-a6.jsonl'])
+    // the rest a press away, and only they are read: the six shown are not read again
+    if (surface === 'terminal') {
+      ran.length = 0
+      await ui.press({ key: 'agents-more' })
+      expect(await ui.find({ key: 'agent-a8' })).toBeDefined()
+      expect(ran.filter(a => a[0] === 'sh' && a[2]!.includes('meta.json')).flatMap(a => a.slice(4).map(f => f.split('/').pop()))).toEqual(['agent-a7.jsonl', 'agent-a8.jsonl'])
+    }
     expect(JSON.stringify(await ui.drawn()).indexOf('"agent-a1"')).toBeLessThan(JSON.stringify(await ui.drawn()).indexOf('"agent-a2"'))
     if (surface === 'terminal') await ui.pointer({ type: 'down', x: 1, y: 1, in: 'hit-agent:a1' })
     else await ui.press({ key: 'agent-a1' })
@@ -1067,7 +1079,6 @@ test("the messages page draws a tab per conversation, the open one filled, and a
     // the messages' texts, read when a page shows them
     if (script.startsWith('for f in')) return ok(paths.flatMap(p => MAIL[idOf(p)]!.map(l => `M\t${l}\n`)).join(''))
     if (script.includes('du -sk') || script.includes('machine-id') || e.argv[0] !== 'sh') return ok('')
-    if (script.includes('agent-*.jsonl')) return ok('')
     // the shelf's read: each transcript's facts and messages, then its tail
     return ok(paths.filter((_, i) => i % 2 === 0).map(p => {
       const id = idOf(p)
@@ -1326,6 +1337,36 @@ test('the shelf groups its running pets by the one talked to last, mood, repo, o
   pets[0]!.lastPromptMs = NOW - 1
   expect(rows('recent')).toEqual(['Last talked to first: me y x'])
   expect(GROUPINGS.map(g => g.by)).toEqual(['recent', 'mood', 'repo', 'model'])
+})
+
+test('a crowded shelf puts the pets that need you first, folds the sleepy ones, and narrows to a filter', async () => {
+  const live = { pid: 1, procStart: null, status: 'idle', waitingFor: null, tmux: null, job: null, name: null, isRemote: false, isElsewhere: false, cwd: null, startedMs: null, socket: null }
+  const pet = (id: string, repo: string, ago: number, status = 'idle') =>
+    ({ ...withLive(parseSession(id, assistant('end_turn'), null, NOW - ago, NOW), { ...live, status }), repo })
+  const day = 24 * 3600_000
+  // you, one stuck on you, three sleepy for a day, and ten idle a minute: fifteen in all
+  const pets = [pet('me', 'acorn', 50, 'busy'), pet('stuck', 'bramble', 10, 'waiting'), ...[1, 2, 3].map(n => pet(`zz${n}`, 'clover', day)),
+    ...Array.from({ length: 10 }, (_, n) => pet(`p${n}`, n % 2 ? 'acorn' : 'bramble', 60_000))]
+  pets[1]!.mood = 'needs'
+  const looks = outfits(pets)
+  const ids = (o: { filter: string; showSleepy: boolean }, by: 'recent' | 'mood' = 'recent') =>
+    arrangeShelf(pets, 'me', by, looks, NOW, o).groups.map(g => `${g.label}: ${g.pets.length}`)
+  const all = arrangeShelf(pets, 'me', 'recent', looks, NOW, { filter: '', showSleepy: false })
+  expect(all.isCrowded).toBe(true)
+  expect(all.sleepy.map(s => s.id)).toEqual(['zz1', 'zz2', 'zz3'])
+  expect(ids({ filter: '', showSleepy: false })).toEqual(['▲ Needs you: 1', 'Last talked to first: 11'])
+  // unfolded, the sleepy ones are back in the row
+  expect(ids({ filter: '', showSleepy: true })).toEqual(['▲ Needs you: 1', 'Last talked to first: 14'])
+  // by mood, the mood rows already put them first
+  expect(ids({ filter: '', showSleepy: false }, 'mood')[0]).toBe('Working: 1')
+  // a filter over repo, name, branch or folder; the count is of all that match
+  const narrowed = arrangeShelf(pets, 'me', 'recent', looks, NOW, { filter: 'bramble', showSleepy: false })
+  expect(narrowed.matched).toBe(6)
+  expect(narrowed.groups.flatMap(g => g.pets).every(s => s.repo === 'bramble')).toBe(true)
+  // a face line's word of status
+  expect([faceStatus(pets[1]!, NOW), faceStatus(pets[2]!, NOW), faceStatus({ ...pets[5]!, subagents: 37 }, NOW)]).toEqual(['needs you', 'zzz', '⚙×37'])
+  // few pets: nothing folded, nothing pinned
+  expect(arrangeShelf(pets.slice(0, 5), 'me', 'recent', looks, NOW, { filter: '', showSleepy: false }).groups.map(g => g.label)).toEqual(['Last talked to first'])
 })
 
 test('a colour you choose for a repo is swapped with the repo that had it, so no two share one', async () => {

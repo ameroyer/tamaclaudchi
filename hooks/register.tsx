@@ -47,7 +47,10 @@ const showMail = atom({ plugin: 'tamaclaudchi', key: 'showMail' } as const, fals
 const mailTab = atom({ plugin: 'tamaclaudchi', key: 'mailTab' } as const, null as string | null)
 const mailSeen = atom({ plugin: 'tamaclaudchi', key: 'mailSeen' } as const, {} as Record<string, number>)
 const footerFrame = atom({ plugin: 'tamaclaudchi', key: 'footerFrame' } as const, 0)
+// what this session is busy doing for you (a kill, a hatch…): the footer's egg shakes meanwhile
+const doing = atom({ plugin: 'tamaclaudchi', key: 'doing' } as const, [] as string[])
 const showSpend = atom({ plugin: 'tamaclaudchi', key: 'showSpend' } as const, false)
+const showHelp = atom({ plugin: 'tamaclaudchi', key: 'showHelp' } as const, false)
 const version = atom({ plugin: 'tamaclaudchi', key: 'version' } as const, '')
 const graveQuery = atom({ plugin: 'tamaclaudchi', key: 'graveQuery' } as const, '')
 const showClosed = atom({ plugin: 'tamaclaudchi', key: 'showClosed' } as const, false)
@@ -60,6 +63,11 @@ const hatch = atom({ plugin: 'tamaclaudchi', key: 'hatch' } as const, NO_HATCH a
 const folderHints = atom({ plugin: 'tamaclaudchi', key: 'folderHints' } as const, { for: null as string | null, dirs: [] as string[] })
 // the pet whose page shows the colours its repo can take
 const pickingColour = atom({ plugin: 'tamaclaudchi', key: 'pickingColour' } as const, null as string | null)
+const density = atom({ plugin: 'tamaclaudchi', key: 'density' } as const, 'auto' as 'auto' | 'cards' | 'faces')
+const shelfFilter = atom({ plugin: 'tamaclaudchi', key: 'shelfFilter' } as const, '')
+const isFiltering = atom({ plugin: 'tamaclaudchi', key: 'isFiltering' } as const, false)
+const showSleepy = atom({ plugin: 'tamaclaudchi', key: 'showSleepy' } as const, false)
+const agentsMore = atom({ plugin: 'tamaclaudchi', key: 'agentsMore' } as const, 0)
 
 // ─── players ─────────────────────────────────────────────────────────────────
 
@@ -348,7 +356,11 @@ const MAX_CLOSED = 150
 const CANDIDATES = 150
 const BATCH = 16
 /** A transcript read from its start is grepped whole: fewer of those per shell. */
-const FRESH_BATCH = 4
+const FRESH_BATCH = 2
+/** A transcript this big is read after every smaller one, on a first read. */
+const BIG_BYTES = 8_000_000
+/** Subagents' transcripts are small: many to a shell. */
+const SUB_BATCH = 64
 /** A read on is backed up this far, so a line cut by the last read is read whole. */
 const OVERLAP_BYTES = 65_536
 /** A session that never got a reply (a scripted one-shot, a quit) leaves the shelf. */
@@ -399,6 +411,21 @@ else
   find "$1" -mindepth 2 -maxdepth 2 -name '*.jsonl' -exec stat -f '%m%t%z%t%N' {} +
 fi`
 
+// What the read script's one pass over a transcript's new bytes says of it,
+// besides the other passes' lines: the newest custom title (a /rename, or an
+// SDK run naming itself) and ai-title, the last model, and the context of the
+// last reply (its input, cache read and cache write), each as a fact line.
+// One pass: a transcript of many MB is read once, not once per fact.
+const FACTS_AWK = String.raw`function lastOf(s, re,  out) { out = ""; while (match(s, re)) { out = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH) } return out }
+function ctxOf(s,  n, i, p, k) { n = 0; split("input_tokens cache_read_input_tokens cache_creation_input_tokens", k, " ")
+  for (i = 1; i <= 3; i++) { p = index(s, "\"" k[i] "\":"); if (p) n += substr(s, p + length(k[i]) + 3) + 0 }
+  return n }
+index($0, "\"customTitle\":\"") { v = lastOf($0, "\"customTitle\":\"([^\"\\\\]|\\\\.)*\""); if (v != "") custom = v }
+index($0, "\"aiTitle\":\"") { v = lastOf($0, "\"aiTitle\":\"([^\"\\\\]|\\\\.)*\""); if (v != "") ai = v }
+index($0, "\"model\":\"claude-") { v = lastOf($0, "\"model\":\"claude-[^\"]*\""); if (v != "") model = v }
+index($0, "\"type\":\"assistant\"") && !index($0, "\"isSidechain\":true") && index($0, "\"usage\"") { ctx = ctxOf($0); hasCtx = 1 }
+END { if (custom != "") print custom; if (ai != "") print ai; if (model != "") print model; if (hasCtx) printf "\"contextTokens\":\"%d\"\n", ctx }`
+
 // One shell per batch of changed transcripts, given as pairs: a path, and the
 // byte its facts were read up to (0 for a file not read yet, or rewritten).
 // For each: its path, then one `"key":"value"` line per fact found past that
@@ -423,13 +450,8 @@ const READ_SCRIPT = `while [ $# -gt 1 ]; do
     grep -m 1 -o '"cwd":"[^"]*"' "$f"
     grep -m 1 -o '"gitBranch":"[^"]*"' "$f"
   fi
-  tail -c +$((off + 1)) "$f" | grep -o -E '"(customTitle|aiTitle)":"([^"\\\\]|\\\\.)*"|"model":"claude-[^"]*"' |
-    awk -F'"' '{ last[$2] = $0 } END { for (k in last) print last[k] }'
-  tail -c +$((off + 1)) "$f" | grep '"type":"assistant"' | grep -v '"isSidechain":true' | grep '"usage"' | tail -n 1 |
-    awk '{ n = 0; split("input_tokens cache_read_input_tokens cache_creation_input_tokens", k, " ")
-      for (i = 1; i <= 3; i++) { p = index($0, "\\"" k[i] "\\":"); if (p) n += substr($0, p + length(k[i]) + 3) + 0 }
-      printf "\\"contextTokens\\":\\"%d\\"\\n", n }'
-  tail -c +$((off + 1)) "$f" | awk '${MAIL_AWK}
+  tail -c +$((off + 1)) "$f" | awk '${FACTS_AWK}
+${MAIL_AWK}
 ${PROMPT_AWK}
 ${USAGE_AWK}
 ${COMPACT_AWK}'
@@ -445,15 +467,11 @@ const USAGE_SCRIPT = `while [ $# -gt 1 ]; do
   tail -c +$((off + 1)) "$f" | awk '${USAGE_AWK}'
 done`
 
-// Each live pet's subagents written to in the last ten minutes (so one cut
-// off mid-task is not counted forever), and whether each one has finished: a
-// last reply, or a background agent's hand-back to its pet.
-const SUBAGENT_SCRIPT = `for d in "$@"; do
-  printf '\\036%s\\n' "$d"
-  printf 'T %s\\n' "$(find "$d" -maxdepth 1 -name 'agent-*.jsonl' 2>/dev/null | wc -l)"
-  find "$d" -maxdepth 1 -name 'agent-*.jsonl' -mmin -10 2>/dev/null | while read -r f; do
-    tail -n 2 "$f" | grep -c -e '"stop_reason":"end_turn"' -e '"name":"SubagentHandback"'
-  done
+// Whether each subagent given has finished: a last reply, or a background
+// agent's hand-back to its pet, in its last two lines.
+const DONE_SCRIPT = `for f in "$@"; do
+  printf '\\036%s\\n' "$f"
+  tail -n 2 "$f" | grep -c -e '"stop_reason":"end_turn"' -e '"name":"SubagentHandback"'
 done`
 
 // The opened pet's subagents given (its newest, however old, and any written
@@ -551,10 +569,12 @@ async function readProcesses($: EngineInterface): Promise<Map<number, Proc> | nu
 /** Whether a pid still runs and is still the process the registry saw start. */
 export async function isRunning($: EngineInterface, pid: number, procStart: string | null): Promise<boolean> {
   if (!Number.isInteger(pid) || pid <= 0) return false
-  const stat = procStart ? await $.fs.read(`/proc/${pid}/stat`).catch(() => '') : ''
+  // a start written as ps prints it was written where there is no /proc: straight to the table
+  const isPsStart = !!procStart && LSTART.test(procStart)
+  const stat = procStart && !isPsStart ? await $.fs.read(`/proc/${pid}/stat`).catch(() => '') : ''
   if (!stat) {
-    if (await $.fs.exists(`/proc/${pid}`)) return true
-    if (await $.fs.exists('/proc/self')) return false
+    if (!isPsStart && await $.fs.exists(`/proc/${pid}`)) return true
+    if (!isPsStart && await $.fs.exists('/proc/self')) return false
     // no /proc at all (macOS): ask the process table, whose start times the
     // registry writes alike
     const table = await processes($)
@@ -792,11 +812,32 @@ async function readBatch($: EngineInterface, batch: Transcript[], now: number) {
   }
 }
 
+/** How many read shells run at once: a first read is bound by awk, one core each. */
+const PARALLEL = 4
+/** How long a poll spends on transcripts not read yet before it draws what it has. */
+const FRESH_BUDGET_MS = 2000
+// transcripts are left to read: the next poll comes at once
+let hasMore = false
+// when this poll stops starting first reads (transcripts, then subagents')
+let deadline = 0
+const isPastDeadline = () => Date.now() > deadline
+
+const chunks = <T,>(list: T[], size: number) => Array.from({ length: Math.ceil(list.length / size) }, (_, i) => list.slice(i * size, (i + 1) * size))
+
+/** Runs `f` on the items in order, PARALLEL at a time, starting no new one once `isDone`; how many it started. */
+async function inParallel<T>(items: T[], f: (item: T) => Promise<void>, isDone = () => false): Promise<number> {
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(PARALLEL, items.length) }, async () => {
+    while (next < items.length && !isDone()) await f(items[next++]!)
+  }))
+  return next
+}
+
 let isReading = false
 // asked for while a read ran (after a kill, a hatch, a clean): read again once it ends
 let askedAgain: { everyMs?: number } | null = null
 // the shelf as last drawn, and when
-let drawn = { text: '', at: 0 }
+let drawn = { text: '', at: 0, shelf: null as TamaSession[] | null }
 // this session held the lease at its last poll
 let isLeading = false
 
@@ -816,8 +857,10 @@ export async function refresh($: EngineInterface, opts: { everyMs?: number } = {
   try {
     // a loop, not a call to itself: the directory's scan follows no cycles
     for (let next: { everyMs?: number } | null = opts; next; ) {
+      hasMore = false
       await readOnce($, next)
-      next = askedAgain
+      // a first read cut short by its budget goes on, the shelf drawn between
+      next = askedAgain ?? (hasMore ? next : null)
       askedAgain = null
     }
   } finally {
@@ -854,7 +897,8 @@ async function readOnce($: EngineInterface, opts: { everyMs?: number }) {
     isLeading = !other && !!mine
     const { shelf, used } = other ? { shelf: other.sessions, used: other.disk } : await readShelf($, dir, now)
     windowsByCwd = await readProjectWindows($, shelf, now)
-    const text = JSON.stringify(shelf)
+    // a follower handed the very shelf it had: nothing to compare
+    const text = shelf === drawn.shelf ? drawn.text : JSON.stringify(shelf)
     // until this session knows its id, it reads for itself, holds no lease and
     // raises no notification; the lease is stamped when renewed, as a cold
     // read can take longer than the lease lasts. What the sessions said stays
@@ -865,9 +909,10 @@ async function readOnce($: EngineInterface, opts: { everyMs?: number }) {
       await share($, paths, JSON.stringify(shelf.map(s => ({ ...s, recent: [] }))), used)
     }
     if (text !== drawn.text || now - drawn.at > REDRAW_MS) {
-      drawn = { text, at: now }
+      drawn = { text, at: now, shelf }
       await update($, sessions, () => shelf)
     }
+    drawn.shelf = shelf
     if (used && JSON.stringify(used) !== JSON.stringify(await read($, disk))) await update($, disk, () => used)
     await announce($, shelf, mine, isReader)
     playMail($, shelf, now)
@@ -875,8 +920,8 @@ async function readOnce($: EngineInterface, opts: { everyMs?: number }) {
     // the opened pet said something new: read its conversation again
     const pick = await read($, selected)
     const opened = pick ? shelf.find(s => s.id === pick) : undefined
-    if (opened && (await read($, convo))?.mtimeMs !== opened.mtimeMs) await readConvo($, opened)
-    if (opened) await readAgents($, opened)
+    if (opened && (await read($, showConvo)) && (await read($, convo))?.mtimeMs !== opened.mtimeMs) await readConvo($, opened)
+    if (opened) await readAgents($, opened, other ? undefined : subListed.get(opened.id))
     // a message sent or received since: read the texts the page shows again
     if (opened) await readMailText($, [opened])
     else if (await read($, showMailroom)) await readMailText($, shelf)
@@ -896,8 +941,17 @@ async function readShelf($: EngineInterface, dir: string, now: number): Promise<
   const files = await listTranscripts($, root, now, live)
   const stale = files.filter(f => cache.get(f.path)?.stamp !== f.stamp)
   const fresh = stale.filter(f => !cache.has(f.path)), grown = stale.filter(f => cache.has(f.path))
-  for (let i = 0; i < grown.length; i += BATCH) await readBatch($, grown.slice(i, i + BATCH), now)
-  for (let i = 0; i < fresh.length; i += FRESH_BATCH) await readBatch($, fresh.slice(i, i + FRESH_BATCH), now)
+  await inParallel(chunks(grown, BATCH), b => readBatch($, b, now))
+  // Those not read yet, for so long a poll: the rest at the next one, which
+  // comes at once. So a first read of hundreds draws the shelf in seconds and
+  // fills it in, not after a minute. The small ones first, live then closed,
+  // then the big ones (one holds its whole batch up for seconds), each the
+  // smallest first.
+  deadline = Date.now() + FRESH_BUDGET_MS
+  const isBig = (f: Transcript) => f.size > BIG_BYTES
+  const order = [...fresh].sort((a, b) => Number(isBig(a)) - Number(isBig(b)) || Number(live.has(b.id)) - Number(live.has(a.id)) || a.size - b.size)
+  const done = await inParallel(chunks(order, FRESH_BATCH), b => readBatch($, b, now), isPastDeadline)
+  hasMore = done < Math.ceil(order.length / FRESH_BATCH)
   const kept = new Set(files.map(f => f.path))
   for (const path of cache.keys()) if (!kept.has(path)) cache.delete(path)
 
@@ -923,8 +977,10 @@ async function readShelf($: EngineInterface, dir: string, now: number): Promise<
   // who messaged whom: each pet's messages, both ends named where known
   const mail = mailEdges(shelf.map(s => ({ id: s.id, facts: cache.get(s.path)?.mail.values() })), live, now - settings.windowMs)
   for (const s of shelf) s.mail = mail.get(s.id) ?? null
-  const working = await readSubagents($, shelf.filter(s => s.live))
-  const subCalls = await readSubagentCalls($, shelf)
+  const subLists = await listSubagents($, shelf)
+  const working = await readSubagents($, shelf.filter(s => s.live), subLists, now)
+  subListed = subLists
+  const owner = await readSubagentCalls($, subLists)
   if (now - diskAt > DISK_MS) await readDisk($, root, shelf, now)
   const slots = await stickyLooks($, shelf, now)
   for (const s of shelf) {
@@ -942,6 +998,7 @@ async function readShelf($: EngineInterface, dir: string, now: number): Promise<
   const key = `${callsRead}|${lastDays(now, 1)[0]}|${windowDays()}|${byAge.map(s => s.path).join('|')}`
   if (key !== spent.key) {
     spent = { key, byId: new Map() }
+    const subCalls = subagentCalls(owner)
     const counted = new Set<string>()
     for (const s of byAge) {
       const own = cache.get(s.path)?.calls
@@ -959,13 +1016,11 @@ async function readShelf($: EngineInterface, dir: string, now: number): Promise<
 }
 
 /**
- * The API calls each pet's subagents made, by pet: their transcripts listed
- * at every poll while the pet runs (once for a closed one), each read on from
- * where it was.
+ * Each pet's subagents' transcripts, by pet: listed at every poll while the
+ * pet runs, once for a closed one. What both the counts and the spend go by.
  */
-async function readSubagentCalls($: EngineInterface, shelf: TamaSession[]): Promise<Map<string, Map<string, Call>>> {
-  const owner = new Map<string, string>()
-  const files: Transcript[] = []
+async function listSubagents($: EngineInterface, shelf: TamaSession[]): Promise<Map<string, Transcript[]>> {
+  const out = new Map<string, Transcript[]>()
   for (const s of shelf) {
     if (!s.path) continue
     const dir = `${dirOf(s)}/subagents`
@@ -977,28 +1032,42 @@ async function readSubagentCalls($: EngineInterface, shelf: TamaSession[]): Prom
       if (s.live) closedSubs.delete(dir)
       else closedSubs.set(dir, list)
     }
-    for (const f of list) { files.push(f); owner.set(f.path, s.id) }
+    out.set(s.id, list)
   }
-  for (const path of subCache.keys()) if (!owner.has(path)) { subCache.delete(path); callsRead++ }
   const dirs = new Set(shelf.filter(s => s.path).map(s => `${dirOf(s)}/subagents`))
   for (const dir of closedSubs.keys()) if (!dirs.has(dir)) closedSubs.delete(dir)
+  return out
+}
+
+/** Reads on each pet's subagents' transcripts for their API calls, from where each was; gives each file's pet. */
+async function readSubagentCalls($: EngineInterface, lists: Map<string, Transcript[]>): Promise<Map<string, string>> {
+  const owner = new Map<string, string>()
+  const files: Transcript[] = []
+  for (const [id, list] of lists) for (const f of list) { files.push(f); owner.set(f.path, id) }
+  for (const path of subCache.keys()) if (!owner.has(path)) { subCache.delete(path); callsRead++ }
   const stale = files.filter(f => subCache.get(f.path)?.stamp !== f.stamp)
-  for (let i = 0; i < stale.length; i += BATCH) {
-    const batch = stale.slice(i, i + BATCH)
+  // a pet with a thousand subagents is read over a few polls, as transcripts are (readShelf)
+  const batches = chunks(stale, SUB_BATCH)
+  const done = await inParallel(batches, async batch => {
     const res = await $.process.run(['sh', '-c', USAGE_SCRIPT, 'sh', ...batch.flatMap(f => [f.path, String(readFrom(subCache.get(f.path), f))])], { timeoutMs: 120_000 }).catch(() => null)
-    if (!res) continue
+    if (!res) return
     const byPath = new Map(batch.map(f => [f.path, f]))
-    for (const chunk of res.stdout.split('\x1e').slice(1)) {
-      const nl = chunk.indexOf('\n')
-      const f = byPath.get(chunk.slice(0, nl))
+    for (const [path, body] of records(res.stdout)) {
+      const f = byPath.get(path)
       if (!f) continue
       const c = subCache.get(f.path)
       const calls = c && f.size >= c.size ? c.calls : new Map<string, Call>()
-      readCalls(chunk.slice(nl + 1), calls)
+      readCalls(body, calls)
       callsRead++
       subCache.set(f.path, { stamp: f.stamp, size: f.size, calls })
     }
-  }
+  }, isPastDeadline)
+  if (done < batches.length) hasMore = true
+  return owner
+}
+
+/** The subagents' calls by pet, from what readSubagentCalls has read (`owner`: each file's pet). */
+function subagentCalls(owner: Map<string, string>): Map<string, Map<string, Call>> {
   const out = new Map<string, Map<string, Call>>()
   for (const [path, c] of subCache) {
     const id = owner.get(path)!
@@ -1065,18 +1134,41 @@ async function readDisk($: EngineInterface, root: string, shelf: TamaSession[], 
   diskWhole = { tempDir, tempKb: kb.get(tempDir) ?? 0, logKb: kb.get(root) ?? 0 }
 }
 
-/** How many subagents each pet has still at work, and has launched in all, by session id. */
-async function readSubagents($: EngineInterface, pets: TamaSession[]): Promise<Map<string, { working: number; ever: number }>> {
+// Whether each subagent had finished, by path, as of its stamp: a file looked
+// at again only when it has changed.
+const doneCache = new Map<string, { stamp: string; isDone: boolean }>()
+
+/**
+ * How many subagents each live pet has still at work (written to in the last
+ * ten minutes, so one cut off mid-task is not counted forever, and not
+ * finished), and has launched in all, by session id.
+ */
+async function readSubagents($: EngineInterface, pets: TamaSession[], lists: Map<string, Transcript[]>, now: number): Promise<Map<string, { working: number; ever: number }>> {
+  const recent = new Map(pets.map(s => [s.id, (lists.get(s.id) ?? []).filter(f => now - f.mtimeMs < AGENT_RUNNING_MS)]))
+  const changed = [...recent.values()].flat().filter(f => doneCache.get(f.path)?.stamp !== f.stamp)
+  await inParallel(chunks(changed, SUB_BATCH), async batch => {
+    const res = await $.process.run(['sh', '-c', DONE_SCRIPT, 'sh', ...batch.map(f => f.path)]).catch(() => null)
+    const byPath = new Map(batch.map(f => [f.path, f]))
+    for (const [path, count] of records(res?.stdout)) {
+      const f = byPath.get(path)
+      if (f) doneCache.set(path, { stamp: f.stamp, isDone: count.trim() !== '0' })
+    }
+  })
   const out = new Map<string, { working: number; ever: number }>()
-  const byDir = new Map(pets.filter(s => s.path).map(s => [`${dirOf(s)}/subagents`, s.id]))
-  if (!byDir.size) return out
-  const res = await $.process.run(['sh', '-c', SUBAGENT_SCRIPT, 'sh', ...byDir.keys()]).catch(() => null)
-  for (const chunk of res?.stdout.split('\x1e').slice(1) ?? []) {
-    const [dir = '', total = '', ...finished] = chunk.split('\n')
-    const id = byDir.get(dir)
-    if (id) out.set(id, { working: finished.filter(c => c.trim() === '0').length, ever: Number(total.replace(/^T\s*/, '')) || 0 })
+  for (const s of pets) {
+    const working = recent.get(s.id)!.filter(f => doneCache.get(f.path)?.isDone === false).length
+    out.set(s.id, { working, ever: lists.get(s.id)?.length ?? 0 })
   }
+  // only the recent ones are looked at again: the rest are let go
+  const looked = new Set([...recent.values()].flat().map(f => f.path))
+  for (const path of doneCache.keys()) if (!looked.has(path)) doneCache.delete(path)
   return out
+}
+
+/** Shows the opened pet's next page of older subagents. */
+async function showMoreAgents($: EngineInterface, s: TamaSession) {
+  await update($, agentsMore, n => n + AGENTS_MORE)
+  await readAgents($, s)
 }
 
 /** The opened pet's conversation, every message whole, from the end of its transcript. */
@@ -1091,6 +1183,12 @@ export async function readConvo($: EngineInterface, s: TamaSession) {
 }
 
 const dirOf = (s: TamaSession) => s.path.slice(0, -'.jsonl'.length)
+
+/** A script's output, a record per file, each `\x1e<path>\n<body>`: [path, body] pairs. */
+const records = (stdout: string | undefined) => (stdout ?? '').split('\x1e').slice(1).map(chunk => {
+  const nl = chunk.indexOf('\n')
+  return nl < 0 ? [chunk, ''] as const : [chunk.slice(0, nl), chunk.slice(nl + 1)] as const
+})
 
 /** The opened pet's git: every checkout it has worked in, the newest commit first. */
 export async function readGit($: EngineInterface, s: TamaSession) {
@@ -1110,44 +1208,65 @@ export async function readGit($: EngineInterface, s: TamaSession) {
   if ((await read($, selected)) === s.id) await update($, git, () => info)
 }
 
+// Each pet's subagents as this session's last read of the shelf listed them (none while following another's).
+let subListed = new Map<string, Transcript[]>()
 // The opened pet's subagents' files as last read: unchanged, they are not read again.
 let agentsSeen = { id: '', stamp: '' }
+// and each subagent as last read, by path, as of its stamp
+const agentCache = new Map<string, { stamp: string; agent: Agent }>()
 
 /**
  * The opened pet's subagents, however long ago they ran: every running one
  * first, then the newest, as many as the setting shows. Only those are read:
  * a pet may have launched hundreds.
  */
-export async function readAgents($: EngineInterface, s: TamaSession) {
+export async function readAgents($: EngineInterface, s: TamaSession, polled?: Transcript[]) {
   if (!s.path) return
   const dir = `${dirOf(s)}/subagents`
-  const listed = await $.fs.list(dir).catch(() => [])
-  const stamp = `${settings.agentsShown}|${listed.map(f => `${f.name}:${f.mtimeMs}:${f.size}`).join('|')}`
+  // this poll's listing, where the shelf was read here; else the folder's own
+  const listed = polled ?? (await $.fs.list(dir).catch(() => []))
+    .filter(f => f.kind === 'file' && /^agent-[\w-]+\.jsonl$/.test(f.name))
+    .map(f => ({ path: `${dir}/${f.name}`, id: s.id, mtimeMs: f.mtimeMs, size: f.size, stamp: `${f.mtimeMs}:${f.size}` }))
+  // as many as the setting shows, and the more you asked for; read again once a file is added or written
+  const cap = settings.agentsShown + (await read($, agentsMore))
+  const stamp = `${cap}|${listed.length}|${listed.reduce((n, f) => Math.max(n, f.mtimeMs), 0)}|${listed.reduce((n, f) => n + f.size, 0)}`
   if (agentsSeen.id === s.id && agentsSeen.stamp === stamp && (await read($, agents))?.id === s.id) return
   agentsSeen = { id: s.id, stamp }
   const now = await $.clock.now()
-  const files = listed.filter(f => f.kind === 'file' && /^agent-[\w-]+\.jsonl$/.test(f.name)).sort((a, b) => b.mtimeMs - a.mtimeMs)
+  const files = [...listed].sort((a, b) => b.mtimeMs - a.mtimeMs)
   // the newest, and any that wrote lately enough to be at work still: one waiting on a long
   // tool may have written before several that have since finished, and the running ones
   // are shown first (only reading tells which run); the cap below holds either way
-  const picked = files.filter((f, i) => i < settings.agentsShown || now - f.mtimeMs < AGENT_RUNNING_MS)
-  const res = picked.length ? await $.process.run(['sh', '-c', AGENTS_SCRIPT, 'sh', ...picked.map(f => `${dir}/${f.name}`)]).catch(() => null) : null
-  const list: Agent[] = []
-  for (const chunk of res?.stdout.split('\x1e').slice(1) ?? []) {
-    const [path = '', mtime = '0', done = '0', modelLine = '', metaLine = ''] = chunk.split('\n')
-    let meta: { description?: string; agentType?: string } = {}
-    try { meta = JSON.parse(metaLine) } catch {}
-    const id = /agent-([\w-]+)\.jsonl$/.exec(path)?.[1]
-    if (!id) continue
-    list.push({
-      id, path, description: meta.description ?? 'a subagent', type: meta.agentType ?? 'agent',
-      model: /"model":"([^"]+)"/.exec(modelLine)?.[1] ?? null, isDone: done.trim() !== '0', mtimeMs: Number(mtime) * 1000,
-    })
-  }
+  const picked = files.filter((f, i) => i < cap || now - f.mtimeMs < AGENT_RUNNING_MS)
+  // each read again only once it has changed: one at work need not read all its siblings again
+  const stampOf = (f: { mtimeMs: number; size: number }) => `${f.mtimeMs}:${f.size}`
+  const changed = picked.filter(f => agentCache.get(f.path)?.stamp !== stampOf(f))
+  await inParallel(chunks(changed, SUB_BATCH), async batch => {
+    const res = await $.process.run(['sh', '-c', AGENTS_SCRIPT, 'sh', ...batch.map(f => f.path)]).catch(() => null)
+    for (const chunk of res?.stdout.split('\x1e').slice(1) ?? []) {
+      const [path = '', mtime = '0', done = '0', modelLine = '', metaLine = ''] = chunk.split('\n')
+      let meta: { description?: string; agentType?: string } = {}
+      try { meta = JSON.parse(metaLine) } catch {}
+      const id = /agent-([\w-]+)\.jsonl$/.exec(path)?.[1]
+      const f = batch.find(b => b.path === path)
+      if (!id || !f) continue
+      agentCache.set(path, {
+        stamp: stampOf(f),
+        agent: {
+          id, path, description: meta.description ?? 'a subagent', type: meta.agentType ?? 'agent',
+          model: /"model":"([^"]+)"/.exec(modelLine)?.[1] ?? null, isDone: done.trim() !== '0', mtimeMs: Number(mtime) * 1000,
+        },
+      })
+    }
+  })
+  const list = picked.flatMap(f => agentCache.get(f.path)?.agent ?? [])
+  // only this pet's picked ones are kept
+  const kept = new Set(picked.map(f => f.path))
+  for (const path of agentCache.keys()) if (!kept.has(path)) agentCache.delete(path)
   const running = (a: Agent) => isAgentRunning(a, now)
   list.sort((a, b) => Number(running(b)) - Number(running(a)) || b.mtimeMs - a.mtimeMs)
   // every running one, then the newest finished ones, while there is room
-  const shown = list.slice(0, Math.max(settings.agentsShown, list.filter(running).length))
+  const shown = list.slice(0, Math.max(cap, list.filter(running).length))
   if ((await read($, selected)) !== s.id) return
   await update($, agents, () => ({ id: s.id, list: shown, total: files.length }))
   // the opened agent wrote more: read its trace again
@@ -1270,6 +1389,7 @@ export async function select($: EngineInterface, id: string | null) {
   await update($, armed, () => null)
   await update($, renaming, () => null)
   await update($, pickingColour, () => null)
+  await update($, agentsMore, () => 0)
   await update($, agentPick, () => null)
   await update($, showGit, () => false)
   await update($, showConvo, () => false)
@@ -1322,7 +1442,8 @@ export async function openAgent($: EngineInterface, id: string | null) {
 export const canJump = (live: Live | null) => !!live && !live.isElsewhere && !!(live.tmux || live.job)
 
 /** Brings the pet's tmux pane forward, or opens its background session. */
-export async function jump($: EngineInterface, s: TamaSession) {
+export const jump = ($: EngineInterface, s: TamaSession) => busy($, `attaching to ${nameOf(s)}`, () => jumpNow($, s))
+async function jumpNow($: EngineInterface, s: TamaSession) {
   if (!s.live) return
   await markSeen($, [s.id])
   if (s.live.tmux) await jumpTo($, s.live.tmux, s.live.name ?? nameOf(s))
@@ -1457,7 +1578,8 @@ async function startBackground($: EngineInterface, dir: string, args: string[]):
  * which is also where a background resume that fails falls back to. Without
  * either, the resume command is copied.
  */
-export async function resurrect($: EngineInterface, s: TamaSession) {
+export const resurrect = ($: EngineInterface, s: TamaSession) => busy($, `waking ${nameOf(s)}`, () => resurrectNow($, s))
+async function resurrectNow($: EngineInterface, s: TamaSession) {
   // it may be back already, since the shelf was read: go to it instead, as a
   // resume of a running session would start a copy of it
   const now = (await readLive($)).get(s.id)
@@ -1549,7 +1671,8 @@ export async function suggestFolders($: EngineInterface, typed: string, pets: Ta
   if ((await read($, hatch)).dir === typed || (typed === '' && (await read($, hatch)).dir === null)) await update($, folderHints, () => ({ for: typed, dirs }))
 }
 
-export async function spawnPet($: EngineInterface, input: string, typed: Partial<Hatch> = {}) {
+export const spawnPet = ($: EngineInterface, input: string, typed: Partial<Hatch> = {}) => busy($, 'hatching a new pet', () => spawnPetNow($, input, typed))
+async function spawnPetNow($: EngineInterface, input: string, typed: Partial<Hatch> = {}) {
   // what was just typed, which the form's state may not hold yet
   const form = { ...(await read($, hatch)), ...typed }
   const home = (await $.env.get('HOME')) ?? ''
@@ -1605,7 +1728,8 @@ async function closeHatch($: EngineInterface) {
 // period), and a press meanwhile must not start a second one on a pet going.
 const killing = new Set<string>()
 
-export async function killPet($: EngineInterface, s: TamaSession) {
+export const killPet = ($: EngineInterface, s: TamaSession) => busy($, `killing ${nameOf(s)}`, () => killPetNow($, s))
+async function killPetNow($: EngineInterface, s: TamaSession) {
   await update($, armed, () => null)
   // never this session's own pet, nor one on another machine, whose pid means nothing here
   if (!s.live || s.live.isElsewhere || s.id === (await read($, me)) || killing.has(s.id)) return
@@ -1711,7 +1835,8 @@ async function cleanOne($: EngineInterface, s: TamaSession, tempDir: string, run
   return res.exitCode === 0 ? 'cleaned' : res.stderr.trim().split('\n')[0] || 'rm failed'
 }
 
-export async function cleanTemp($: EngineInterface, s: TamaSession) {
+export const cleanTemp = ($: EngineInterface, s: TamaSession) => busy($, `cleaning ${nameOf(s)}`, () => cleanTempNow($, s))
+async function cleanTempNow($: EngineInterface, s: TamaSession) {
   await update($, armed, () => null)
   const d = await read($, disk)
   if (s.live) {
@@ -1731,7 +1856,8 @@ export async function cleanTemp($: EngineInterface, s: TamaSession) {
 export const cleanable = (closed: TamaSession[]) => closed.filter(s => !s.live && (s.disk?.tempKb ?? 0) >= MIN_CLEAN_KB)
 
 /** Cleans every closed pet's temp folder at once, with the same care as one. */
-export async function cleanAll($: EngineInterface, closed: TamaSession[]) {
+export const cleanAll = ($: EngineInterface, closed: TamaSession[]) => busy($, 'cleaning the graveyard', () => cleanAllNow($, closed))
+async function cleanAllNow($: EngineInterface, closed: TamaSession[]) {
   await update($, armed, () => null)
   const d = await read($, disk)
   if (!d) return
@@ -1974,46 +2100,73 @@ const DOZE = ['(-ᴗ-)ᶻ ', '(-ᴗ-)zᶻ']
 
 type Next = (e: RenderInput<'SessionMode'>) => Promise<RenderElement>
 
+/** Runs `f` while the footer's egg shakes, saying `label`: what would otherwise look like a hang. */
+async function busy<T>($: EngineInterface, label: string, f: () => Promise<T>): Promise<T> {
+  await update($, doing, d => [...d, label])
+  try {
+    return await f()
+  } finally {
+    await update($, doing, d => d.filter((x, i) => i !== d.indexOf(label)))
+  }
+}
+
+/** The egg's two frames: it rocks while a press is being carried out. */
+const EGG = ['🥚 ', ' 🥚']
+/** Names longer than a card shows; the footer's name slot is at most this wide. */
+const TAG_W = 40
+
 export async function renderFooter($: EngineInterface, e: RenderInput<'SessionMode'>, next: Next) {
   const all = await read($, sessions)
   const list = all.filter(s => s.live)
-  if (!list.length) return next(e)
+  const busyWith = await read($, doing)
+  // a name cut short on a card shows here whole while its card is hovered, a
+  // grave's too while the graveyard is open
+  const graves = (await read($, showClosed)) ? all.filter(s => !s.live).slice(0, GRAVES_SHOWN) : []
+  const long = [...list, ...graves].filter(s => petName(s).length > CARD_W - 5)
+  if (!list.length && !long.length && !busyWith.length) return next(e)
   const { Box, Text } = $.ui.resolve(e)
   // the shelf's own colours, given out over every pet as the shelf gives them;
   // each pet's hue at full strength, which a terminal of 16 colours keeps
   const looks = outfits(all)
-  const tint = (s: TamaSession) => vivid(looks.get(s.id)!.skin.body)
+  const tint = (s: TamaSession) => (s.live ? vivid(looks.get(s.id)!.skin.body) : GREY)
   const frame = await read($, footerFrame)
   const busy = list.filter(s => s.mood === 'busy')
   const asking = list.filter(s => s.mood === 'needs')
   const asleep = list.filter(s => s.mood !== 'busy' && s.mood !== 'needs')
   const awake = [...asking, ...busy].slice(0, AWAKE_SHOWN)
   const more = asking.length + busy.length - awake.length
-  // A face's name, while the pointer is on it, shows in a slot left of the
-  // faces that is always there: the line keeps its width, so nothing around
-  // it moves or wraps. A face and its name share a hover group.
-  const group = (s: TamaSession) => `tama-face-${s.id}`.slice(0, 64)
+  // A pet's name, while the pointer is on its face here or its card on the
+  // shelf, shows in a slot left of the faces that is always there: the line
+  // keeps its width, so nothing around it moves or wraps. A face, a card and
+  // the name share a hover group.
+  const named = [...new Map([...awake, ...long].map(s => [s.id, s])).values()]
+  const slotW = Math.min(TAG_W, Math.max(NAME_W, ...long.map(s => petName(s).length + 2)))
   return (
     <Box>
       {e.props.modes.length ? <Text dimColor>{e.props.modes.join(' & ')} · </Text> : null}
-      {awake.length ? (
-        <Box position="relative" width={NAME_W} height={1}>
-          {awake.map(s => (
-            <Box position="absolute" top={0} right={1} display="none" hover={{ scope: group(s), display: 'flex' }}>
-              <Text color={tint(s)}>{clip(petName(s), NAME_W - 2)}</Text>
+      {named.length ? (
+        <Box position="relative" width={slotW} height={1}>
+          {named.map(s => (
+            <Box position="absolute" top={0} right={1} display="none" hover={{ scope: faceGroup(s.id), display: 'flex' }}>
+              <Text color={tint(s)}>{clip(petName(s), slotW - 2)}</Text>
             </Box>
           ))}
         </Box>
       ) : null}
       {awake.map((s, i) => s.mood === 'needs'
-        ? <Text key={`face-${s.id}`} hover={{ scope: group(s), bold: true }}><Text color={tint(s)}>{ASKING}</Text><Text bold color={RED}>{frame % 2 ? ' ' : '!'}</Text> </Text>
+        ? <Text key={`face-${s.id}`} hover={{ scope: faceGroup(s.id), bold: true }}><Text color={tint(s)}>{ASKING}</Text><Text bold color={RED}>{frame % 2 ? ' ' : '!'}</Text> </Text>
         // each waves on its own beat
-        : <Text key={`face-${s.id}`} color={tint(s)} hover={{ scope: group(s), bold: true }}>{WAVE[(frame + i) % 2]} </Text>)}
+        : <Text key={`face-${s.id}`} color={tint(s)} hover={{ scope: faceGroup(s.id), bold: true }}>{WAVE[(frame + i) % 2]} </Text>)}
       {more ? <Text dimColor>+{more} </Text> : null}
       {asleep.length ? <Text dimColor>{awake.length ? '· ' : ''}{DOZE[frame % 2]} ×{asleep.length}</Text> : null}
+      {/* something pressed is under way: the egg rocks until it is done */}
+      {busyWith.length ? <Text dimColor>{list.length ? ' · ' : ''}{EGG[frame % 2]} {busyWith[0]}…</Text> : null}
     </Box>
   )
 }
+
+/** A pet's hover group: its face in the footer, its card on the shelf, and its name in the footer's slot. */
+const faceGroup = (id: string) => `tama-face-${id}`.slice(0, 64)
 
 // ─── view ────────────────────────────────────────────────────────────────────
 
@@ -2027,6 +2180,9 @@ const GRAVES_SHOWN = 40
 const CARD_W = 24
 /** A subagent's card on its pet's page: the half-size pet, its task, its state. */
 const AGENT_W = 18
+/** A subagent's line on a page with many, in cells; and how many more a press shows. */
+const AGENT_LINE_W = 48
+const AGENTS_MORE = 20
 /** A card shows its pet's disk use from this much (KiB); its page always does. */
 const CARD_DISK_KB = 100 * 1024
 /** How many steps of a subagent's trace are drawn, the newest. */
@@ -2083,13 +2239,14 @@ const MEGAPHONE = '📣' // a broadcast from this session to the others
 /** How many messages the messages page and a pet's page draw, the newest. */
 const POSTS_SHOWN = 40
 
-type View = { list: TamaSession[]; mine: string | null; looks: Map<string, Outfit>; now: number; cols: number; seen: Record<string, number> }
+type View = { list: TamaSession[]; mine: string | null; looks: Map<string, Outfit>; now: number; cols: number; seen: Record<string, number>; mod: string; armedId: string | null }
 
 export async function renderPane($: EngineInterface, e: PaneEvent) {
   const list = await read($, sessions)
   const pick = await read($, selected)
   const v: View = {
     list, mine: await read($, me), looks: outfits(list), now: Date.now(), cols: Math.max(CARD_W, e.props.bodyColumns), seen: await read($, mailSeen),
+    mod: await read($, version), armedId: await read($, armed),
   }
   const chosen = pick ? list.find(s => s.id === pick) : undefined
   if (!chosen) return shelfPage($, e, v)
@@ -2102,7 +2259,7 @@ export async function renderPane($: EngineInterface, e: PaneEvent) {
 
 /** What both pages draw a pet with. */
 function kit($: EngineInterface, e: PaneEvent, v: View) {
-  const { Box, Text } = $.ui.resolve(e)
+  const { Box, Text, Button } = $.ui.resolve(e)
   // On the terminal a pet is a true-colour Raster (Text colours are cut to the
   // terminal's palette, which washes pastels out to white), with an invisible
   // Client over it that reports hover and clicks.
@@ -2144,7 +2301,16 @@ function kit($: EngineInterface, e: PaneEvent, v: View) {
   const note = (text: string) => <Text dimColor> · {text}</Text>
   const header = (text: string, aside?: string) =>
     <Box marginTop={1}><Text>{title(text)}{aside ? note(aside) : null}</Text></Box>
-  return { pet, agentPet, modelPill, ctx, title, note, header, brand: <Text bold color={ACCENT}>✿ TamaClaudchi ✿</Text> }
+  // the mod's name, and which copy of it this is, as its plugin.json says
+  const brand = <Text><Text bold color={ACCENT}>✿ TamaClaudchi ✿</Text>{v.mod ? <Text color={HEADER}> v{v.mod}</Text> : null}</Text>
+  // a page's way back, where the keyboard starts
+  const back = (key: string, hotkey: string, onPress: () => void, label = '← back to the shelf') =>
+    <Button key={key} hotkey={hotkey} plain label={label} autoFocus onPress={onPress} />
+  // a button that does something hard to undo: the first press arms it, the second does it
+  const twoPress = (key: string, hotkey: string, armedAs: string, label: string, confirm: string, act: () => void) => v.armedId === armedAs
+    ? <Button key={key} hotkey={hotkey} plain label={`✕ press again: ${confirm}`} onPress={act} />
+    : <Button key={key} hotkey={hotkey} plain dimColor label={`✕ ${label}`} onPress={() => void update($, armed, () => armedAs)} />
+  return { art, pet, agentPet, modelPill, ctx, title, note, header, brand, back, twoPress }
 }
 
 /**
@@ -2189,7 +2355,7 @@ export function groupPets(alive: TamaSession[], mine: string | null, by: Groupin
   if (by === 'recent') return alive.length ? [{ label: 'Last talked to first', color: ACCENT, pets: [...alive].sort((a, b) => talkedAt(b) - talkedAt(a) || b.mtimeMs - a.mtimeMs) }] : []
   if (by === 'repo') {
     const repos = new Map<string, TamaSession[]>()
-    for (const s of alive) repos.set(s.repo, [...(repos.get(s.repo) ?? []), s])
+    for (const s of alive) repos.get(s.repo)?.push(s) ?? repos.set(s.repo, [s])
     return [...repos].sort(([, a], [, b]) => latest(b) - latest(a))
       .map(([repo, pets]) => ({ label: repo, color: looks.get(pets[0]!.id)?.skin.body ?? GREY, pets: order(pets) }))
   }
@@ -2198,6 +2364,34 @@ export function groupPets(alive: TamaSession[], mine: string | null, by: Groupin
       .filter(g => g.pets.length)
   }
   return GROUPS.map(g => ({ label: g.label, color: g.color, pets: order(alive.filter(s => g.moods.includes(s.mood))) })).filter(g => g.pets.length)
+}
+
+/** Past this many running pets the shelf is crowded: faces rather than cards, the ones needing you first, the sleepy ones folded. */
+export const CROWDED = 12
+
+/**
+ * The running pets as the shelf shows them: narrowed to those matching the
+ * filter; on a crowded shelf, those that need you in a row of their own first
+ * (unless the rows are by mood, which has one), and the sleepy ones folded
+ * away (`sleepy`) unless unfolded. Your own pet is never folded.
+ */
+export function arrangeShelf(
+  alive: TamaSession[], mine: string | null, by: Grouping, looks: Map<string, Outfit>, now: number,
+  o: { filter: string; showSleepy: boolean },
+) {
+  const shown = o.filter ? searchGraves(alive, o.filter).found : alive
+  const isCrowded = alive.length > CROWDED
+  const sleepy = isCrowded && !o.showSleepy ? shown.filter(s => s.id !== mine && isSleepy(s, now, settings.sleepyMs)) : []
+  const isSleepyNow = new Set(sleepy)
+  const awake = shown.filter(s => !isSleepyNow.has(s))
+  const needs = isCrowded && by !== 'mood' ? awake.filter(s => s.mood === 'needs' && s.id !== mine) : []
+  const isNeeding = new Set(needs)
+  const rest = awake.filter(s => !isNeeding.has(s))
+  const groups = [
+    ...(needs.length ? [{ label: '▲ Needs you', color: MOOD.needs.border!, pets: needs }] : []),
+    ...groupPets(rest, mine, by, looks),
+  ]
+  return { groups, sleepy, matched: shown.length, isCrowded }
 }
 
 /** Moves the shelf on to its next grouping, kept for the sessions to come. */
@@ -2209,6 +2403,14 @@ async function nextGrouping($: EngineInterface) {
   await $.store.set(GROUPING_KEY, by).catch(() => undefined)
 }
 const GROUPING_KEY = 'group-by'
+
+/** Flips the shelf between cards and faces, from what it shows now, kept for the sessions to come. */
+async function toggleDensity($: EngineInterface, isFaces: boolean) {
+  const next = isFaces ? 'cards' : 'faces'
+  await update($, density, () => next)
+  await $.store.set(DENSITY_KEY, next).catch(() => undefined)
+}
+const DENSITY_KEY = 'density'
 
 /**
  * The messages the messages page shows: between two sessions both still
@@ -2228,13 +2430,12 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
   const Input = e.surface !== 'mobile' ? $.ui.resolve(e).Input : null
   const k = kit($, e, v)
   if (await read($, showSpend)) return spendPage($, e, v)
+  if (await read($, showHelp)) return helpPage($, e, v)
   if (await read($, showMailroom)) return mailroomPage($, e, v)
   const isGraveOpen = await read($, showClosed)
   const query = await read($, graveQuery)
   const spawning = await read($, isSpawning)
   const used = await read($, disk)
-  const armedId = await read($, armed)
-  const mod = await read($, version)
 
   const self = v.list.find(s => s.id === v.mine)
   const alive = v.list.filter(s => s.live || s.id === v.mine)
@@ -2250,22 +2451,57 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
   const by = await read($, groupBy)
   const stuck = needing(v.list, v.mine)
   const isTelling = await read($, isBroadcasting)
+  const filter = await read($, shelfFilter)
+  const isFilterOpen = (await read($, isFiltering)) || !!filter
+  const shelf = arrangeShelf(alive, v.mine, by, v.looks, v.now, { filter, showSleepy: await read($, showSleepy) })
   const groups = isGraveOpen
     ? [{ label: `${GRAVE} Graveyard`, color: GREY, pets: found.slice(0, GRAVES_SHOWN) }]
-    : groupPets(alive, v.mine, by, v.looks)
+    : shelf.groups
+  const onPage = groups.flatMap(g => g.pets)
+  // a crowded page draws a line per pet, not a card; or as last chosen with `v`
+  const chosen = await read($, density)
+  const isFaces = chosen === 'faces' || (chosen === 'auto' && onPage.length > CROWDED)
   // the first pets on the page, in reading order, open with a digit
-  const digit = new Map(groups.flatMap(g => g.pets).slice(0, DIGITS).map((s, i) => [s.id, i + 1]))
+  const digit = new Map(onPage.slice(0, DIGITS).map((s, i) => [s.id, i + 1]))
   const perRow = Math.max(1, Math.floor(v.cols / CARD_W))
   const rowsOf = (pets: TamaSession[]) =>
     Array.from({ length: Math.ceil(pets.length / perRow) }, (_, i) => pets.slice(i * perRow, (i + 1) * perRow))
   const openGraves = (isOn: boolean) => () => void update($, showClosed, () => isOn)
   const setQuery = (q: string) => void update($, graveQuery, () => q)
+  const setFilter = (q: string) => void update($, shelfFilter, () => q)
+  const closeFilter = () => { void update($, shelfFilter, () => ''); void update($, isFiltering, () => false) }
 
   return (
     <Box flexDirection="column">
-      {/* the header, top down: title, how to open a pet, disk, the count, the keys, the legend */}
+      {/* the header, top down: title and version; how to open a pet, and help; the
+          actions; then the shelf's own section: its legend and how it is laid out */}
       {k.brand}
-      <Text dimColor>Click a pet, or press its number, to open it</Text>
+      <Box columnGap={2} flexWrap="wrap">
+        <Text>Click a pet, or press its number, to open it!</Text>
+        <Button key="help" hotkey="h" plain label="? help" onPress={() => void update($, showHelp, () => true)} />
+      </Box>
+      {isGraveOpen
+        ? <Button key="graveyard" hotkey="g" plain label="← back to the shelf" onPress={openGraves(false)} />
+        : spawning && Input ? hatchForm($, e, v, self, await read($, hatch), await read($, folderHints))
+        : isTelling && Input ? broadcastBox($, e, v, self, await read($, broadcastTo), digit)
+        : (
+          <Box flexDirection="column">
+            <Box columnGap={2} flexWrap="wrap">
+              <Box columnGap={1}>
+                <Button key="spawn" hotkey="n" plain label="+ new pet" onPress={() => { void update($, isSpawning, () => true); void suggestFolders($, '', v.list) }} />
+                <Text dimColor>· {alive.length} running across {plural(folders, 'folder')}</Text>
+              </Box>
+              {closed.length ? <Button key="graveyard" hotkey="g" plain label={`${GRAVE} graveyard · ${closed.length} closed`} onPress={openGraves(true)} /> : null}
+            </Box>
+            <Box columnGap={2} flexWrap="wrap">
+              <Button key="spend" hotkey="s" plain label={`$ credit usage · ${usd(spentToday)} today`} onPress={() => void update($, showSpend, () => true)} />
+              {audience(v.list, v.mine, 'all').length && Input ? <Button key="broadcast" hotkey="t" plain label={`${MEGAPHONE} broadcast a message`} onPress={() => void update($, isBroadcasting, () => true)} /> : null}
+              {posts ? <Button key="mailroom" hotkey="m" plain label={`${LETTER} ${plural(posts, 'message')}`} onPress={() => void openMailroom($, true)} /> : null}
+              {/* the pets stuck on you, one press each, the longest stuck first */}
+              {stuck.length ? <Button key="next" hotkey="j" plain label={`▲ next that needs you · ${stuck.length}`} onPress={() => void jumpNext($)} /> : null}
+            </Box>
+          </Box>
+        )}
       {/* what Claude keeps on disk, orange then red past the thresholds in /config: time to clean up */}
       {used ? (
         <Text wrap="truncate">
@@ -2274,24 +2510,27 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
           <Text dimColor> on disk: {bytes(used.tempKb)} in {used.tempDir}, {bytes(used.logKb)} of transcripts</Text>
         </Text>
       ) : null}
-      <Text dimColor>{plural(alive.length, 'running pet')} across {plural(folders, 'folder')}</Text>
-      {isGraveOpen
-        ? <Button key="graveyard" hotkey="g" plain label="← back to the shelf" onPress={openGraves(false)} />
-        : spawning && Input ? hatchForm($, e, v, self, await read($, hatch), await read($, folderHints))
-        : isTelling && Input ? broadcastBox($, e, v, self, await read($, broadcastTo), digit)
-        : (
+      {isGraveOpen ? null : (
+        <Box flexDirection="column" marginTop={1}>
+          <Text wrap="truncate">{k.title('Browse your Tamas')}<Text dimColor>  (body = repo · hat = model · item = branch)</Text></Text>
           <Box columnGap={2} flexWrap="wrap">
-            <Button key="spawn" hotkey="n" plain label="+ new pet" onPress={() => { void update($, isSpawning, () => true); void suggestFolders($, '', v.list) }} />
-            {closed.length ? <Button key="graveyard" hotkey="g" plain label={`${GRAVE} graveyard · ${closed.length} closed`} onPress={openGraves(true)} /> : null}
-            <Button key="spend" hotkey="s" plain label={`$ spend · ${usd(spentToday)} today`} onPress={() => void update($, showSpend, () => true)} />
-            {posts ? <Button key="mailroom" hotkey="m" plain label={`${LETTER} ${plural(posts, 'message')}`} onPress={() => void openMailroom($, true)} /> : null}
-            {/* the pets stuck on you, one press each, the longest stuck first */}
-            {stuck.length ? <Button key="next" hotkey="j" plain label={`▲ next that needs you · ${stuck.length}`} onPress={() => void jumpNext($)} /> : null}
-            {audience(v.list, v.mine, 'all').length && Input ? <Button key="broadcast" hotkey="t" plain label={`${MEGAPHONE} broadcast`} onPress={() => void update($, isBroadcasting, () => true)} /> : null}
             <Button key="group" hotkey="o" plain label={`⇅ ${GROUPINGS.find(g => g.by === by)?.label ?? GROUPINGS[0]!.label}`} onPress={() => void nextGrouping($)} />
+            <Button key="density" hotkey="v" plain label={isFaces ? '▦ cards view' : '☺ faces view'} onPress={() => void toggleDensity($, isFaces)} />
+            {Input && !isFilterOpen ? <Button key="filter" hotkey="f" plain label="⌕ filter" onPress={() => void update($, isFiltering, () => true)} /> : null}
           </Box>
-        )}
-      <Text>{mod ? <Text color={HEADER}>v{mod} </Text> : null}<Text dimColor>Legend: body = repo · hat = model · item = branch</Text></Text>
+        </Box>
+      )}
+      {/* the running pets narrowed to those matching: the digits go to the first of them */}
+      {!isGraveOpen && isFilterOpen && Input ? (
+        <Box flexDirection="column">
+          <Input key="shelf-filter" label="filter" placeholder="a regexp over name, repo, branch or folder" value={filter} autoFocus
+            onInput={setFilter} onSubmit={setFilter} />
+          <Box columnGap={2}>
+            <Text dimColor>{filter ? `${shelf.matched} of ${alive.length} match` : 'every running pet'}</Text>
+            <Button key="filter-clear" plain dimColor label="✕ clear" onPress={closeFilter} />
+          </Box>
+        </Box>
+      ) : null}
       {isGraveOpen || self ? null : <Text dimColor>Your pet hatches once this session has written its first reply.</Text>}
       {isGraveOpen && !closed.length ? <Text dimColor>No pet has closed {since()}.</Text> : null}
       {isGraveOpen && closed.length && Input ? (
@@ -2308,18 +2547,29 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
       ) : null}
       {/* every closed pet's temp folder at once, in two presses; their transcripts stay */}
       {isGraveOpen && toClean.length ? (
-        armedId === CLEAN_ALL
-          ? <Button key="clean-all" hotkey="x" plain label={`✕ press again: delete ${bytes(cleanKb)} of temp files from ${plural(toClean.length, 'closed pet')} (transcripts stay)`} onPress={() => void cleanAll($, closed)} />
-          : <Button key="clean-all" hotkey="x" plain dimColor label={`✕ clean every closed pet's temp folder (${bytes(cleanKb)} in ${toClean.length})`} onPress={() => void update($, armed, () => CLEAN_ALL)} />
+        k.twoPress('clean-all', 'x', CLEAN_ALL, `clean every closed pet's temp folder (${bytes(cleanKb)} in ${toClean.length})`,
+          `delete ${bytes(cleanKb)} of temp files from ${plural(toClean.length, 'closed pet')} (transcripts stay)`, () => void cleanAll($, closed))
       ) : null}
       {groups.map(g => (
         <Box key={`group-${g.label}`} flexDirection="column" marginTop={1}>
           <Text bold color={g.color}>{g.label} <Text dimColor>· {g.pets.length}</Text></Text>
-          {rowsOf(g.pets).map((row, i) => (
-            <Box key={`row-${g.label}-${i}`} flexDirection="row">{row.map(s => card($, e, v, s, digit.get(s.id), by !== 'mood'))}</Box>
-          ))}
+          {isFaces
+            ? <Box key={`faces-${g.label}`} flexDirection="column">{g.pets.map(s => faceLine($, e, v, s, digit.get(s.id)))}</Box>
+            : rowsOf(g.pets).map((row, i) => (
+              <Box key={`row-${g.label}-${i}`} flexDirection="row">{row.map(s => card($, e, v, s, digit.get(s.id), by !== 'mood'))}</Box>
+            ))}
         </Box>
       ))}
+      {/* a crowded shelf's sleepy pets, folded into a line: one press shows them */}
+      {!isGraveOpen && shelf.sleepy.length ? (
+        <Box marginTop={1}>
+          <Button key="sleepy" hotkey="w" plain dimColor label={`▸ zzz ${plural(shelf.sleepy.length, 'sleepy pet')}, idle for hours`} onPress={() => void update($, showSleepy, () => true)} />
+        </Box>
+      ) : !isGraveOpen && shelf.isCrowded && await read($, showSleepy) ? (
+        <Box marginTop={1}>
+          <Button key="sleepy" hotkey="w" plain dimColor label="▾ fold the sleepy pets away again" onPress={() => void update($, showSleepy, () => false)} />
+        </Box>
+      ) : null}
     </Box>
   )
 }
@@ -2427,6 +2677,54 @@ function broadcastBox($: EngineInterface, e: PaneEvent, v: View, self: TamaSessi
 /** What `armed` holds while the graveyard's clean-all waits for its second press. */
 const CLEAN_ALL = '*graves'
 
+/** A face line's columns, in cells: its face, then one word of status; its name, whole, after them. */
+const FACE_GLYPH_W = 8
+const FACE_STATUS_W = 10
+
+/** What a face line says after the name: subagents at work, a full context, or its mood, in a word. */
+export function faceStatus(s: TamaSession, now: number): string {
+  if (s.subagents) return `⚙×${s.subagents}`
+  if (canCompact(s)) return `${ctxOf(s).pct}% ctx`
+  if (!s.live) return 'closed'
+  if (s.mood === 'needs') return 'needs you'
+  if (s.mood === 'busy') return 'working'
+  if (isSleepy(s, now, settings.sleepyMs)) return 'zzz'
+  return s.mood === 'waiting' ? 'waiting' : 'idle'
+}
+
+/**
+ * One pet on a crowded shelf, a line of its own: the footer's face for its mood
+ * in its repo's colour, a word of status, and its name in full. The line opens
+ * it, as a card's name does, by its digit too.
+ */
+function faceLine($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?: number) {
+  const { Box, Text, Button } = $.ui.resolve(e)
+  const o = v.looks.get(s.id)!
+  const isMe = s.id === v.mine
+  const tint = s.live || isMe ? vivid(o.skin.body) : GREY
+  const glyph = s.mood === 'needs' && s.live ? ASKING
+    : s.mood === 'busy' && s.live ? WAVE[0]!
+    : !s.live && !isMe ? '(-ᴗ-)°'
+    : isSleepy(s, v.now, settings.sleepyMs) ? DOZE[0]!.trimEnd()
+    : '(•ᴗ•)'
+  const status = isMe ? '★ you' : faceStatus(s, v.now)
+  // the line's room for the name, past the face, the status and the digit's `1: `
+  const room = Math.max(8, v.cols - FACE_GLYPH_W - FACE_STATUS_W - 4)
+  const name = clip(petName(s), room)
+  const statusColor = isMe ? ME : s.mood === 'needs' && s.live ? RED : s.mood === 'busy' && s.live ? MOOD.busy.border! : undefined
+  return (
+    <Box key={`face-${s.id}`}>
+      <Button key={`name-${s.id}`} plain hotkey={digit ? digitKey(digit) : undefined} onPress={() => void select($, s.id)}>
+        <Text color={tint}>{glyph.padEnd(FACE_GLYPH_W)}</Text>
+        <Text color={statusColor} dimColor={!statusColor}>{clip(status, FACE_STATUS_W - 1).padEnd(FACE_STATUS_W)}</Text>
+        <Text bold={!!s.live || isMe} dimColor={!s.live && !isMe}>{name}</Text>
+        {/* its repo after it, where the line has room: a button's text would wrap */}
+        {name.length + s.repo.length + 2 <= room ? <Text dimColor>  {s.repo}</Text> : null}
+      </Button>
+    </Box>
+  )
+}
+
 /** One pet's card on the shelf; `digit` opens it from the keyboard; `showMood` when its row does not say it. */
 function card($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?: number, showMood = false) {
   const { Box, Text, Button } = $.ui.resolve(e)
@@ -2444,7 +2742,7 @@ function card($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?:
     // the wrapper (inside the card's own border it would be clipped). Only the
     // border cells are covered: a box over the whole card would take the
     // clicks meant for its buttons and pet.
-    <Box key={`card-${s.id}`} position="relative" width={CARD_W}>
+    <Box key={`card-${s.id}`} position="relative" width={CARD_W} hover={{ scope: faceGroup(s.id) }}>
       <Box flexDirection="column" alignItems="center" width={CARD_W} height={isTerminal ? CARD_H : undefined}
         borderStyle={isMe ? 'double' : 'round'} borderColor={isMe ? ME : s.live ? MOOD[s.mood].border ?? o.skin.outline : GREY}
         hover={{ scope: `repo:${s.repo}`.slice(0, 64), borderColor: HOVER }}>
@@ -2471,8 +2769,9 @@ function card($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?:
             {/* one line, cut by hand: a button's text wraps; the room left by `1: ` */}
             <Text bold dimColor={!s.live} color={isMe ? ME : undefined}>{clip(name, nameW)}</Text>
           </Button>
-          {/* a name cut short shows whole under it while hovered, over the repo's line; a surface with no hover never shows it */}
-          {name.length > nameW ? (
+          {/* a name cut short shows whole in the footer while the card is hovered; elsewhere
+              than the terminal, under it too; a surface with no hover never shows it */}
+          {name.length > nameW && !isTerminal ? (
             <Box position="absolute" top={1} left={0} display="none" hover={{ display: 'flex' }}>
               <Text bold backgroundColor={PILL_BG} color="#3b3340"> {name} </Text>
             </Box>
@@ -2499,6 +2798,80 @@ function card($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?:
           <Text color={HOVER}>{text}</Text>
         </Box>
       )) : null}
+    </Box>
+  )
+}
+
+/** The professor who teaches the help page: a wizard's hat and a spellbook. */
+const PROFESSOR: Outfit = { skin: REPO_SKINS[0]!, hat: 'wizard', item: 'spellbook', isEgg: false }
+
+/** The help page: what a pet shows, how pets message each other, and every key, by what it is for. */
+function helpPage($: EngineInterface, e: PaneEvent, v: View) {
+  const { Box, Text } = $.ui.resolve(e)
+  const k = kit($, e, v)
+  const row = (keys: string, what: string) => (
+    <Text key={`help-${keys}-${what.slice(0, 12)}`} wrap="wrap"><Text bold color={ACCENT}>{keys.padEnd(8)}</Text>{what}</Text>
+  )
+  const section = (title: string, rows: JSX.Element[]) => (
+    <Box key={`help-${title}`} flexDirection="column" marginTop={1}>{k.title(title)}{rows}</Box>
+  )
+  return (
+    <Box flexDirection="column">
+      <Box columnGap={2} flexWrap="wrap">
+        {k.brand}
+        {k.back('help-back', 'h', () => void update($, showHelp, () => false))}
+      </Box>
+      <Box columnGap={2} marginTop={1} alignItems="center">
+        {/* `page:` so a click on the professor opens no pet */}
+        {k.art(PROFESSOR, 'help-pet', 'page:help', { faded: false }, 'the professor')}
+        <Box flexDirection="column" flexShrink={1}>
+          <Text bold>Welcome to class!</Text>
+          <Text wrap="wrap">Every Claude Code session on this machine is a pet. Keep them busy, keep them unstuck, and give the sleepy ones a nudge.</Text>
+          <Text dimColor wrap="wrap">There will be no exam. Probably.</Text>
+        </Box>
+      </Box>
+      {section('Reading a pet', [
+        row('body', 'its repo\'s colour'),
+        row('hat', 'its model: wizard Fable · crown Opus · poet\'s hat Sonnet · fox mask Haiku'),
+        row('item', 'what it holds is its branch'),
+        row('lights', 'how full its context is, up to auto-compact'),
+        row('mood', 'egg: not replied yet · frown and tear: stuck on you · eyes shut: idle for hours · halo: closed'),
+        row('💌', 'it sent or got a message you haven\'t looked at yet'),
+      ])}
+      {section('Passing notes', [
+        <Text key="help-notes" wrap="wrap">Your pets can talk to each other, and you can talk to them without leaving this session. A message lands in the other session as a note from this one: its Claude reads it, gets to work on it, and can write back. Only sessions on this machine can be reached.</Text>,
+        row('page', 'open a pet, then type in the "message this session" box at the bottom of its page'),
+        row('t', 'broadcast one message to every running pet, or only to one repo\'s'),
+        row('m', 'the messages page: every conversation between your sessions, a tab per pair (1–9 switch tabs)'),
+      ])}
+      {section('Shortcuts: getting around', [
+        row('1–9, 0', 'open a pet (Tab reaches the rest)'),
+        row('j', 'hop to the next pet that needs you, the longest stuck first'),
+        row('h', 'this page, and back'),
+      ])}
+      {section('Shortcuts: your pets', [
+        row('n', 'hatch a new pet: a folder, a first prompt, a model, a worktree if you like'),
+        row('g', 'the graveyard: closed pets, searchable'),
+        row('x ×2', 'in the graveyard: clean every closed pet\'s temp files'),
+        row('s', 'credit usage: what your pets would cost at API prices'),
+      ])}
+      {section('Shortcuts: arranging the shelf', [
+        row('o', 'sort: last talked to, mood, repo or model'),
+        row('v', 'cards or faces, a line each'),
+        row('f', 'filter by name, repo, branch or folder'),
+        row('w', 'show or fold the sleepy pets on a crowded shelf'),
+      ])}
+      {section('Shortcuts: on a pet\'s page', [
+        row('b', 'back to the shelf'),
+        row('a', 'attach: go to its tmux pane or background session'),
+        row('r', 'resurrect a closed pet'),
+        row('e', 'rename it'),
+        row('p', 'change its repo\'s colour'),
+        row('c', 'copy its resume command'),
+        row('z', 'compact its context when it gets full'),
+        row('k ×2', 'kill it'),
+        row('d ×2', 'clean up a closed pet\'s temp files (its transcript stays)'),
+      ])}
     </Box>
   )
 }
@@ -2536,7 +2909,7 @@ async function spendPage($: EngineInterface, e: PaneEvent, v: View) {
     <Box flexDirection="column">
       <Box columnGap={2} flexWrap="wrap">
         {k.brand}
-        <Button key="spend-back" hotkey="s" plain label="← back to the shelf" autoFocus onPress={() => void update($, showSpend, () => false)} />
+        {k.back('spend-back', 's', () => void update($, showSpend, () => false))}
       </Box>
       <Text dimColor wrap="wrap">What these sessions' API calls, their subagents' included, would cost at API list prices. A subscription is not billed this way.</Text>
       <Box marginTop={1}><Text><Text bold>{usd(byDay[0]?.usd ?? 0)}</Text><Text dimColor> today · </Text><Text bold>{usd(total)}</Text><Text dimColor> {since()}{unpriced ? ` · ${plural(unpriced, 'call')} to models with no price here, left out` : ''}</Text></Text></Box>
@@ -2658,7 +3031,7 @@ async function mailroomPage($: EngineInterface, e: PaneEvent, v: View) {
     <Box flexDirection="column">
       <Box columnGap={2} flexWrap="wrap">
         {k.brand}
-        <Button key="mailroom-back" hotkey="m" plain label="← back to the shelf" autoFocus onPress={() => void openMailroom($, false)} />
+        {k.back('mailroom-back', 'm', () => void openMailroom($, false))}
       </Box>
       <Text dimColor wrap="wrap">What your running sessions told each other {since()}: a tab per conversation, the latest first. A closed pet's are on its own page.</Text>
       {!open ? <Text dimColor>No messages {since()}.</Text> : (
@@ -2683,10 +3056,10 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
   const Input = e.surface !== 'mobile' ? $.ui.resolve(e).Input : null
   const k = kit($, e, v)
   const o = v.looks.get(s.id)!
+  const working = crew.filter(a => isAgentRunning(a, v.now)).length
   const gitRead = await read($, git)
   // a record written by an older version of the mod has no trees: read it again
   const info = gitRead?.id === s.id && Array.isArray(gitRead.trees) ? gitRead : null
-  const armedId = await read($, armed)
   const isRenaming = (await read($, renaming)) === s.id
   const isPicking = (await read($, pickingColour)) === s.id
   const talk = await read($, convo)
@@ -2721,27 +3094,26 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
 
   return (
     <Box flexDirection="column">
+      {/* the header: where you are and how to leave it, then what can be done to the pet */}
       <Box columnGap={2} flexWrap="wrap">
         {k.brand}
-        <Button key="back" hotkey="b" plain label="back to the shelf" autoFocus onPress={() => void select($, null)} />
-        {canJump(s.live) ? <Button key="jump" hotkey="a" plain label={`${HOME} attach`} onPress={() => void jump($, s)} /> : null}
+        {k.back('back', 'b', () => void select($, null))}
+        {canJump(s.live) ? <Button key="jump" hotkey="a" plain label={`${HOME} attach to pet`} onPress={() => void jump($, s)} /> : null}
         {s.live ? null : <Button key="resurrect" hotkey="r" plain label={`${WING} resurrect`} onPress={() => void resurrect($, s)} />}
-        <Button key="resume" hotkey="c" plain label="copy resume command" onPress={() => void copyResume($, s)} />
+      </Box>
+      <Box columnGap={2} flexWrap="wrap">
         {Input && !s.live?.isElsewhere ? <Button key="rename" hotkey="e" plain label="✎ rename" onPress={() => void startRename($, s.id)} /> : null}
-        <Button key="colour" hotkey="p" plain label={isPicking ? '◐ keep its colour' : '◐ colour'}
+        <Button key="colour" hotkey="p" plain label={isPicking ? '◐ keep its colour' : '◐ change colour'}
           onPress={() => void update($, pickingColour, () => (isPicking ? null : s.id))} />
-        {canCompact(s) ? <Button key="compact" hotkey="z" plain label={`⇲ compact · ${ctxOf(s).pct}% full`} onPress={() => void compactPet($, s)} /> : null}
         {s.live && !s.live.isElsewhere && s.id !== v.mine ? (
-          armedId === s.id
-            ? <Button key="kill" hotkey="k" plain label={`✕ press again: ${s.live.job ? 'stop its background session' : `kill it${tmux ? ' and its tmux pane' : ''}`}`} onPress={() => void killPet($, s)} />
-            : <Button key="kill" hotkey="k" plain dimColor label="✕ kill" onPress={() => void update($, armed, () => s.id)} />
+          k.twoPress('kill', 'k', s.id, 'kill pet', s.live.job ? 'stop its background session' : `kill it${tmux ? ' and its tmux pane' : ''}`, () => void killPet($, s))
         ) : null}
+        <Button key="resume" hotkey="c" plain label="⧉ copy resume command" onPress={() => void copyResume($, s)} />
         {/* a closed pet's temp folder: scratch files and task output, often big */}
         {!s.live && s.disk && s.disk.tempKb >= MIN_CLEAN_KB ? (
-          armedId === s.id
-            ? <Button key="clean" hotkey="x" plain label={`✕ press again: delete ${bytes(s.disk.tempKb)} of temp files (its transcript stays)`} onPress={() => void cleanTemp($, s)} />
-            : <Button key="clean" hotkey="x" plain dimColor label={`✕ clean its temp folder (${bytes(s.disk.tempKb)})`} onPress={() => void update($, armed, () => s.id)} />
+          k.twoPress('clean', 'd', s.id, `clean up temp on disk (${bytes(s.disk.tempKb)})`, `delete ${bytes(s.disk.tempKb)} of temp files (its transcript stays)`, () => void cleanTemp($, s))
         ) : null}
+        {canCompact(s) ? <Button key="compact" hotkey="z" plain label={`⇲ compact · ${ctxOf(s).pct}% full`} onPress={() => void compactPet($, s)} /> : null}
       </Box>
       <Box flexDirection="column" alignItems="center" borderStyle="round" borderColor={MOOD[s.mood].border ?? o.skin.outline} paddingX={1}>
         {k.pet(s, 'detail-pet', true)}
@@ -2796,7 +3168,24 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
       </Box>
       {crew.length ? (
         <Box flexDirection="column">
-          {k.header('Subagents', `${crew.filter(a => isAgentRunning(a, v.now)).length} working${launched > crew.length ? ` · the newest ${crew.length} of ${launched}` : ''} · click one for its trace`)}
+          {k.header('Subagents', `${working} working · ${Math.max(0, launched - working)} done${launched > crew.length ? ` · showing ${crew.length} of ${launched}` : ''} · click one for its trace`)}
+          {/* many: a line each, the running ones first, rather than a card each */}
+          {crew.length > CROWDED ? (
+            <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+              {crew.map(a => {
+                const running = isAgentRunning(a, v.now)
+                return (
+                  <Box key={`agent-line-${a.id}`} width={AGENT_LINE_W}>
+                    <Button key={`agent-${a.id}`} plain onPress={() => void openAgent($, a.id)}>
+                      <Text color={running ? MOOD.busy.border! : GREY}>{running ? '● ' : '✓ '}</Text>
+                      <Text dimColor={!running}>{clip(a.description, AGENT_LINE_W - 12).padEnd(AGENT_LINE_W - 12)} </Text>
+                      <Text dimColor>{running ? 'working' : ago(v.now - a.mtimeMs).replace(' ago', '')}</Text>
+                    </Button>
+                  </Box>
+                )
+              })}
+            </Box>
+          ) : (
           <Box flexDirection="row" flexWrap="wrap">
             {crew.map(a => {
               const running = isAgentRunning(a, v.now)
@@ -2810,6 +3199,11 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
               )
             })}
           </Box>
+          )}
+          {/* the older finished ones, a page at a time */}
+          {launched > crew.length ? (
+            <Button key="agents-more" plain dimColor label={`▸ ${Math.min(AGENTS_MORE, launched - crew.length)} more of the ${launched - crew.length} not shown`} onPress={() => void showMoreAgents($, s)} />
+          ) : null}
         </Box>
       ) : null}
       <Box marginTop={1}>
@@ -2866,7 +3260,7 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
         </Box>
       ) : null}
       <Box marginTop={1}>
-        <Button key="convo-toggle" plain onPress={() => void update($, showConvo, x => !x)}>
+        <Button key="convo-toggle" plain onPress={() => { void update($, showConvo, x => !x); if (!isConvoOpen) void readConvo($, s) }}>
           {k.title('Conversation preview', isConvoOpen ? '▾' : '▸')}
           {k.note(`newest first · ${plural(said.length, 'message')}${said.at(-1)?.at ? `, the last ${ago(v.now - said.at(-1)!.at!)}` : ''}`)}
         </Button>
@@ -2918,7 +3312,7 @@ async function agentPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSessi
     <Box flexDirection="column">
       <Box columnGap={2} flexWrap="wrap">
         {k.brand}
-        <Button key="agent-back" hotkey="b" plain label={`back to ${clip(petName(s), 30)}`} autoFocus onPress={() => void openAgent($, null)} />
+        {k.back('agent-back', 'b', () => void openAgent($, null), `← back to ${clip(petName(s), 30)}`)}
         {canJump(s.live) ? <Button key="jump" hotkey="a" plain label={`${HOME} attach to its pet`} onPress={() => void jump($, s)} /> : null}
       </Box>
       <Box flexDirection="row" gap={2} borderStyle="round" borderColor={running ? MOOD.busy.border! : GREY} paddingX={1}>
@@ -3001,8 +3395,14 @@ export const register: Register = (on, options) => {
     await update($, renaming, () => null)
     await update($, pickingColour, () => null)
     await update($, folderHints, () => ({ for: null, dirs: [] }))
+    await update($, shelfFilter, () => '')
+    await update($, isFiltering, () => false)
+    await update($, showSleepy, () => false)
+    await update($, agentsMore, () => 0)
     await update($, showClosed, () => false)
     await update($, showSpend, () => false)
+    await update($, showHelp, () => false)
+    await update($, doing, () => [])
     await update($, showMail, () => false)
     await update($, showMailroom, () => false)
     await update($, mailTab, () => null)
@@ -3014,6 +3414,9 @@ export const register: Register = (on, options) => {
     // the shelf's grouping, as last chosen on this machine
     const by = await $.store.get(GROUPING_KEY).catch(() => undefined)
     await update($, groupBy, () => (GROUPINGS.some(g => g.by === by) ? by as Grouping : 'recent'))
+    // and its cards or faces, as last chosen
+    const dense = await $.store.get(DENSITY_KEY).catch(() => undefined)
+    await update($, density, () => (dense === 'cards' || dense === 'faces' ? dense : 'auto'))
     void $.session.id().then(async id => {
       await update($, me, () => id)
       if (id) await markRunning($, id)
@@ -3039,10 +3442,10 @@ export const register: Register = (on, options) => {
     // alone reads the frame, so nothing else is drawn again); dozing faces
     // alone snore slower, so an idle machine redraws less
     let frames = 0
-    $.clock.every(FOOTER_FRAME_MS, () => void read($, sessions).then(list => {
+    $.clock.every(FOOTER_FRAME_MS, () => void Promise.all([read($, sessions), read($, doing)]).then(([list, busyWith]) => {
       const live = list.filter(s => s.live)
-      if (!live.length) return
-      if (live.some(s => s.mood === 'busy' || s.mood === 'needs') || ++frames % DOZE_FRAMES === 0) return update($, footerFrame, n => n + 1)
+      if (busyWith.length || live.some(s => s.mood === 'busy' || s.mood === 'needs')) return update($, footerFrame, n => n + 1)
+      if (live.length && ++frames % DOZE_FRAMES === 0) return update($, footerFrame, n => n + 1)
     }))
     return next(e)
   })

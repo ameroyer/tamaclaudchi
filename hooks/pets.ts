@@ -121,7 +121,12 @@ export type Outfit = { skin: Skin; hat: string | null; item: string; isEgg: bool
  * Outfits for everyone on the shelf: the colour and item each was given for
  * good (see stickySlots), or, before that is known, spread over the shelf as is.
  */
+// by shelf: the shelf's array is new only when it has changed, and the pane and footer draw often
+const outfitsOf = new WeakMap<TamaSession[], Map<string, Outfit>>()
+
 export function outfits(all: TamaSession[]): Map<string, Outfit> {
+  const known = outfitsOf.get(all)
+  if (known) return known
   const colors = assignSlots(all.map(repoKey), REPO_SKINS)
   const items = assignSlots(all.map(itemKey), ITEM_NAMES)
   const out = new Map<string, Outfit>()
@@ -133,6 +138,7 @@ export function outfits(all: TamaSession[]): Map<string, Outfit> {
       isEgg: !s.model,
     })
   }
+  outfitsOf.set(all, out)
   return out
 }
 

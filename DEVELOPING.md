@@ -26,6 +26,27 @@ TypeScript installed, type-check with:
 tsc -p .
 ```
 
+## Benchmark it
+
+`bench/` times the mod's own read and draw on a fake Claude folder: many
+sessions, big transcripts, one with a great many subagents. It runs the real
+`refresh()` and pane on real files and processes, through a stand-in for the
+engine (`bench/run.ts`, with `bench/shim.ts` for what the mod imports from
+`claude-code`), so it needs Node and esbuild, not Claude Code:
+
+```
+node bench/fixture.mjs /tmp/tama-fixture 300 120 1000 40   # sessions, live, subagents, MB of the 8 biggest
+npx esbuild bench/run.ts --bundle --platform=node --format=esm \
+  --alias:claude-code=./bench/shim.ts --jsx-factory=h --jsx-fragment=Fragment --outfile=/tmp/tama-bench.mjs
+TAMA_FIXTURE=/tmp/tama-fixture node /tmp/tama-bench.mjs
+```
+
+It prints how long the first read takes, and when it first draws the shelf; a
+poll after it, with ten pets writing; a poll with the many-subagent pet open;
+the draws; and for each, where the time went, by process and file call. On a
+2024 Mac, with those numbers: the shelf drawn after about 2 s, the whole first
+read 7 to 9 s, a poll after it about 0.35 s.
+
 ## How it works
 
 It only reads what Claude Code already writes: the transcripts under
@@ -93,4 +114,5 @@ in `hooks/register.tsx`, in sections; the other modules are plain helpers.
 | `hooks/format.ts` | text helpers: sizes, ages, prices, colours |
 | `hooks/hooks.json` | names the hooks module for Claude Code |
 | `hooks/tama.test.ts` | the tests, run by `claude plugin test .` |
+| `bench/` | the benchmark (above) |
 | `types/index.d.ts` | the mod's state, typed |
