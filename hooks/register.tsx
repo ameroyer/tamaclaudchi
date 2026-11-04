@@ -119,12 +119,13 @@ async function readProjectWindows($: EngineInterface, shelf: TamaSession[], now:
   const out = new Map<string, CompactWindows>()
   const cwds = new Set(shelf.map(s => s.cwd).filter(Boolean))
   for (const cwd of projectSettings.keys()) if (!cwds.has(cwd)) projectSettings.delete(cwd)
+  // the stale ones read at once, side by side
+  await Promise.all([...cwds].filter(cwd => !(now - (projectSettings.get(cwd)?.at ?? -Infinity) <= PROJECT_SETTINGS_MS)).map(async cwd => {
+    const [shared, local] = await Promise.all([readSettings($, `${cwd}/.claude/settings.json`), readSettings($, `${cwd}/.claude/settings.local.json`)])
+    projectSettings.set(cwd, { at: now, shared, local })
+  }))
   for (const cwd of cwds) {
-    let set = projectSettings.get(cwd)
-    if (!set || now - set.at > PROJECT_SETTINGS_MS) {
-      set = { at: now, shared: await readSettings($, `${cwd}/.claude/settings.json`), local: await readSettings($, `${cwd}/.claude/settings.local.json`) }
-      projectSettings.set(cwd, set)
-    }
+    const set = projectSettings.get(cwd)!
     if (set.shared || set.local) out.set(cwd, withSettings(withSettings(windows, set.shared), set.local))
   }
   return out
@@ -837,8 +838,10 @@ async function readBatch($: EngineInterface, batch: Transcript[], now: number) {
       const head = chunk.slice(nl + 1, sep)
       const facts = { ...(isReadOn ? c.facts : {}), ...factsOf(head) }
       const calls = isReadOn ? c.calls : new Map<string, Call>()
+      const had = isReadOn ? calls.size : -1
       readCalls(head, calls)
-      callsRead++
+      // the spend is counted again only when a call was found (or the file rewritten)
+      if (calls.size !== had) callsRead++
       const mail = isReadOn ? c.mail : new Map<string, MailFact>()
       readMail(head, mail)
       const compacts = isReadOn ? c.compacts : new Map<string, number>()
@@ -941,6 +944,9 @@ function logOnce($: EngineInterface, text: string) {
   said.add(key)
 }
 
+// what this session last shared, as its shelf's text and disk: unchanged, not written again
+let shared = { text: '', used: '' }
+
 /** One pass of refresh. */
 async function readOnce($: EngineInterface, opts: { everyMs?: number }) {
   try {
@@ -970,7 +976,12 @@ async function readOnce($: EngineInterface, opts: { everyMs?: number }) {
     const isReader = !other && !!mine
     if (isReader) {
       await claim($, paths, { by: mine, at: await $.clock.now(), everyMs })
-      await share($, paths, JSON.stringify(shelf.map(s => ({ ...s, recent: [] }))), used)
+      // the shelf as shared: built again when it changed, its disk did, or a takeover wants it whole
+      const usedText = JSON.stringify(used)
+      if (!written || text !== shared.text || usedText !== shared.used) {
+        await share($, paths, JSON.stringify(shelf.map(s => ({ ...s, recent: [] }))), used)
+        shared = { text, used: usedText }
+      }
     }
     if (text !== drawn.text || now - drawn.at > REDRAW_MS) {
       drawn = { text, at: now, shelf }
@@ -1121,8 +1132,9 @@ async function readSubagentCalls($: EngineInterface, lists: Map<string, Transcri
       if (!f) continue
       const c = subCache.get(f.path)
       const calls = c && f.size >= c.size ? c.calls : new Map<string, Call>()
+      const had = calls === c?.calls ? calls.size : -1
       readCalls(body, calls)
-      callsRead++
+      if (calls.size !== had) callsRead++
       subCache.set(f.path, { stamp: f.stamp, size: f.size, calls })
     }
   }, isPastDeadline)
@@ -1307,12 +1319,13 @@ export async function readAgents($: EngineInterface, s: TamaSession, polled?: Tr
   const changed = picked.filter(f => agentCache.get(f.path)?.stamp !== stampOf(f))
   await inParallel(chunks(changed, SUB_BATCH), async batch => {
     const res = await $.process.run(['sh', '-c', AGENTS_SCRIPT, 'sh', ...batch.map(f => f.path)]).catch(() => null)
+    const byPath = new Map(batch.map(f => [f.path, f]))
     for (const chunk of res?.stdout.split('\x1e').slice(1) ?? []) {
       const [path = '', mtime = '0', done = '0', modelLine = '', metaLine = ''] = chunk.split('\n')
       let meta: { description?: string; agentType?: string } = {}
       try { meta = JSON.parse(metaLine) } catch {}
       const id = /agent-([\w-]+)\.jsonl$/.exec(path)?.[1]
-      const f = batch.find(b => b.path === path)
+      const f = byPath.get(path)
       if (!id || !f) continue
       agentCache.set(path, {
         stamp: stampOf(f),
@@ -1483,7 +1496,7 @@ export async function openTab($: EngineInterface, key: string | null) {
   await update($, mailTab, () => key)
   const posts = postsOf(await read($, sessions))
   const threads = threadsOf(posts)
-  const t = threads.find(x => x.key === key) ?? threads[0]
+  const t = openThread(threads, key)
   if (t) await markSeen($, t.ends.map(e => e.id))
 }
 
@@ -2145,9 +2158,6 @@ export async function broadcast($: EngineInterface, text: string) {
 // a little face in its pet's colour. Working ones wave, one that needs you
 // blinks a red mark, and the idle ones doze as one face with a count; the
 // pointer on an awake face shows whose it is.
-
-// The values this module reads. The engine's scan wants them declared in each
-// module that uses them; one plugin and key is one value.
 
 /** How long each frame of the faces holds. */
 export const FOOTER_FRAME_MS = 700
@@ -3434,7 +3444,8 @@ const everyMs = (isPaneOpen: boolean) => (!isPaneOpen && settings.alerts === 'of
 
 async function open($: EngineInterface, focus: boolean) {
   await update($, isOpen, () => true)
-  await refresh($)
+  // not awaited: a cold read draws the shelf as it goes, the egg rocking meanwhile
+  void refresh($)
   return $.ui.open(focus ? { id: PANE, title: TITLE, focus: true } : { id: PANE, title: TITLE })
 }
 

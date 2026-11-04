@@ -85,7 +85,8 @@ export function stickySlots(keys: string[], count: number, kept: Record<string, 
       if (now - kept[k]![1] > SEEN_EVERY_MS) out[k] = [slot, now]
     } else fresh.push(k)
   }
-  const remembered = new Set(Object.entries(out).filter(([k]) => !here.includes(k)).map(([, [slot]]) => slot))
+  const isHere = new Set(here)
+  const remembered = new Set(Object.entries(out).filter(([k]) => !isHere.has(k)).map(([, [slot]]) => slot))
   for (const k of fresh) {
     const start = hashStr(k) % count
     const at = (n: number) => (start + n) % count
