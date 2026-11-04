@@ -9,7 +9,7 @@ import { costOf } from './pricing'
 import { vivid } from './format'
 import { MODEL_SKIN, REPO_SKINS } from './sprites'
 import { dayOf, readCalls, spendOf, type Call } from './spend'
-import { attachClient, canTellApart, followed, readLive, forgetProcesses, isRunning, machineFrom, newMail, news, parentOf, searchGraves } from './register'
+import { attachClient, canTellApart, followed, readLive, forgetProcesses, isAliveElsewhere, isRunning, LAPSED_MS, leaseTimes, machineFrom, machineKeyOf, newMail, news, parentOf, searchGraves } from './register'
 import { hasRecentMail, isFrom, mailEdges, postsOf, readMail, threadsOf, type MailFact } from './mail'
 import { mailFrames } from './pets'
 import { settings } from './config'
@@ -468,6 +468,49 @@ test('a machine is known by its machine id and pid namespace on Linux, by its ha
   expect(machineFrom('\n')).toEqual({ key: 'local', domain: null })
 })
 
+test("a session on another machine is closed once its machine's lease lapsed, or it rebooted under a new id", async () => {
+  expect(machineKeyOf('linux:0123456789ab4cdef0123456789abcde:pid:[4026531836]')).toBe('0123456789ab')
+  expect(machineKeyOf('darwin')).toBeNull()
+  const leases = leaseTimes([
+    { name: 'lease-0123456789ab.json', kind: 'file', mtimeMs: 100 },
+    { name: 'lease-0123456789ab-v6.json', kind: 'file', mtimeMs: 500 },
+    { name: 'shelf-0123456789ab-v6.json', kind: 'file', mtimeMs: 900 },
+    { name: 'running-3fa8706c', kind: 'file', mtimeMs: 900 },
+  ])
+  expect([...leases]).toEqual([['0123456789ab', 500]]) // the newest lease of any version
+  const day = 86_400_000, now = 10 * day
+  // its machine still reads for itself: running, as long as the window says
+  expect(isAliveElsewhere(now - day, now - 4000, now, 5 * day)).toBe(true)
+  // the machine crashed: its lease stopped well after the entry was last written
+  expect(isAliveElsewhere(now - 5 * 3_600_000, now - 4 * 3_600_000, now, 5 * day)).toBe(false)
+  // a session there without the mod, written to after the lease stopped: not proof it ended
+  expect(isAliveElsewhere(now - 60_000, now - 2 * LAPSED_MS - 60_000, now, 5 * day)).toBe(true)
+  // a machine that never ran the mod: the window alone
+  expect(isAliveElsewhere(now - day, undefined, now, 5 * day)).toBe(true)
+  expect(isAliveElsewhere(now - 6 * day, undefined, now, 5 * day)).toBe(false)
+})
+
+test('a session resumed here wins over the entry its last run left on another machine', async () => {
+  const files: Record<string, object> = {
+    // as left by the run before a reboot, under the machine's old id
+    'aura-1.json': { pid: 5, sessionId: 'aura', status: 'shell', pidDomain: 'linux:0123456789ab4cdef0123456789abcde:pid:[1]', updatedAt: Date.now() },
+    'aura-2.json': { pid: 6, sessionId: 'aura', status: 'idle', name: 'here' },
+    'aura-3.json': { pid: 7, sessionId: 'aura', status: 'shell', pidDomain: 'linux:0123456789ab4cdef0123456789abcde:pid:[1]', updatedAt: Date.now() },
+  }
+  const $ = {
+    env: { get: async (k: string) => (k === 'HOME' ? '/h' : undefined) },
+    fs: {
+      list: async (dir: string) => dir.endsWith('/sessions') ? Object.keys(files).map(name => ({ name, kind: 'file', size: 1, mtimeMs: 1, isLink: false })) : [],
+      read: async (path: string) => JSON.stringify(files[path.split('/').pop()!]),
+      exists: async () => true,
+    },
+    process: { run: async () => ({ exitCode: 0, stdout: 'feedface00c0ffee\n\npid:[4026531836]\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }) },
+  } as unknown as EngineInterface
+  const live = (await readLive($)).get('aura')!
+  expect(live.isElsewhere).toBe(false)
+  expect(live.name).toBe('here')
+})
+
 test('a search that could run for ages as a regexp is matched as plain text', async () => {
   const pet = { ...parseSession('a', '', null, NOW, NOW), repo: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab', cwd: '/src/x' }
   for (const q of ['(a+)+$', '(x*)*y', '(.+)\\1']) expect(searchGraves([pet], q).isRegexp).toBe(false)
@@ -674,7 +717,7 @@ test('the shelf shows running pets, hides killed ones until asked, and opens a p
     const sharedShelf = JSON.parse(written.get('/h/.claude/tamaclaudchi/shelf-feedface00c0-v6.json') ?? '{}')
     expect(sharedShelf.sessions.find((x: { id: string }) => x.id === 'b').recent).toEqual([])
     // e runs on another machine: on the shelf, but nothing here may jump to, kill or resurrect it
-    expect(await ui.find({ type: 'Text', text: /another machine/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /↗ elsewhere/ })).toBeDefined()
     expect(await ui.find({ key: 'home-e' })).toBeUndefined()
     expect(await ui.find({ key: 'wing-e' })).toBeUndefined()
     // what the pets spent: b's two calls, the one written twice counted once
