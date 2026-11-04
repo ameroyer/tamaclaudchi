@@ -73,7 +73,11 @@ process started, nothing is ever killed.
 sessions of all of them. Each machine reads for itself, with files of its own.
 A session on another machine shows on the shelf, marked ↗, but nothing here
 kills, cleans, renames, messages or resurrects it. It counts as running while
-its registry entry was written within the graveyard's window. Claude Code
+its registry entry was written within the graveyard's window, unless its
+machine's lease lapsed after that: no session there runs the mod any more, so
+the machine went down (or rebooted under a new machine id, as some cluster
+nodes do, leaving its old entries behind as another machine's). A session
+running here wins over an entry its last run left elsewhere. Claude Code
 names every Mac alike in the registry, so a Mac can tell a Linux machine's
 sessions apart, but not another Mac's: those show as closed.
 

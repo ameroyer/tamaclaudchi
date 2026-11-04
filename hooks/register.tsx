@@ -640,10 +640,53 @@ async function readMachine($: EngineInterface): Promise<{ key: string; domain: s
   return r ? machineFrom(r.stdout) : { key: 'local', domain: null }
 }
 
+/**
+ * The machine a registry entry's `pidDomain` names, as the key its files of
+ * the mod carry (`lease-<key>-v6.json`); null for a Mac's `darwin`, which
+ * names no machine in particular.
+ */
+export function machineKeyOf(domain: string): string | null {
+  const m = /^linux:([0-9a-f]{12,}):/.exec(domain)
+  return m ? m[1]!.slice(0, 12) : null
+}
+
+/**
+ * When each machine sharing this home folder last renewed a lease, under any
+ * version of the mod: a session on it reading for it, until then. Read off
+ * the lease files' times, which hold whatever the version wrote inside.
+ */
+export function leaseTimes(files: { name: string; kind: string; mtimeMs: number }[]): Map<string, number> {
+  const out = new Map<string, number>()
+  for (const f of files) {
+    const m = /^lease-([0-9a-f]{12})(?:-v\d+)?\.json$/.exec(f.name)
+    if (f.kind === 'file' && m) out.set(m[1]!, Math.max(out.get(m[1]!) ?? 0, f.mtimeMs))
+  }
+  return out
+}
+
+/**
+ * A lease not renewed for this long: no session on its machine runs the mod
+ * any more (the machine is down, or rebooted under a new machine id, as some
+ * cluster nodes do). Far past a lease's own few polls, for the clocks of two
+ * machines and the caches of a network file system.
+ */
+export const LAPSED_MS = 5 * 60_000
+
+/**
+ * Whether a session on another machine still counts as running. Its pid
+ * cannot be checked from here, so: not if its machine's lease lapsed after the
+ * entry was last written (a session there that ran the mod last saw it, and
+ * none has since); else while the entry was written within the graveyard's window.
+ */
+export function isAliveElsewhere(updatedMs: number, leaseMs: number | undefined, now: number, windowMs: number): boolean {
+  if (leaseMs !== undefined && now - leaseMs > LAPSED_MS && updatedMs <= leaseMs + LAPSED_MS) return false
+  return now - updatedMs < windowMs
+}
+
 // Registry entries by file name, as last read: one whose file has not changed
 // is not read again, and one whose process had ended stays ended (a crashed
 // session leaves its entry behind for good).
-const registry = new Map<string, { stamp: string; id: string | null; live: Live; hasEnded: boolean; updatedMs: number }>()
+const registry = new Map<string, { stamp: string; id: string | null; live: Live; hasEnded: boolean; updatedMs: number; machine: string | null }>()
 
 /**
  * Running sessions by id, from Claude Code's own registry of live processes.
@@ -657,6 +700,7 @@ export async function readLive($: EngineInterface): Promise<Map<string, Live>> {
   const out = new Map<string, Live>()
   const seen = new Set<string>()
   forgetProcesses()
+  let leases: Map<string, number> | null = null
   for (const f of await $.fs.list(dir).catch(() => [])) {
     if (f.kind !== 'file' || !f.name.endsWith('.json')) continue
     seen.add(f.name)
@@ -669,6 +713,7 @@ export async function readLive($: EngineInterface): Promise<Map<string, Live>> {
         e = {
           stamp, id: typeof reg.sessionId === 'string' ? reg.sessionId : null, hasEnded: false,
           updatedMs: typeof reg.updatedAt === 'number' ? reg.updatedAt : 0,
+          machine: isElsewhere ? machineKeyOf(reg.pidDomain) : null,
           live: {
             isElsewhere,
             pid: reg.pid, procStart: typeof reg.procStart === 'string' ? reg.procStart : null,
@@ -694,17 +739,28 @@ export async function readLive($: EngineInterface): Promise<Map<string, Live>> {
     }
     if (!e.id || e.hasEnded) continue
     if (e.live.isElsewhere) {
-      if (Date.now() - e.updatedMs < settings.windowMs) out.set(e.id, joined(out.get(e.id), e.live))
+      if (e.machine) leases ??= leaseTimes(await $.fs.list(`${await claudeDir($)}/tamaclaudchi`).catch(() => []))
+      if (isAliveElsewhere(e.updatedMs, e.machine ? leases?.get(e.machine) : undefined, Date.now(), settings.windowMs)) out.set(e.id, merged(out.get(e.id), e.live))
       continue
     }
     if (!(await isRunning($, e.live.pid, e.live.procStart))) {
       e.hasEnded = true
       continue
     }
-    out.set(e.id, joined(out.get(e.id), e.live))
+    out.set(e.id, merged(out.get(e.id), e.live))
   }
   for (const name of registry.keys()) if (!seen.has(name)) registry.delete(name)
   return out
+}
+
+/**
+ * Two live entries for one session id. One here beats one elsewhere: a
+ * session resumed on this machine leaves the entry of its last run on another
+ * behind (or on this one, before a reboot gave it a new machine id).
+ */
+function merged(a: Live | undefined, b: Live): Live {
+  if (a && a.isElsewhere !== b.isElsewhere) return a.isElsewhere ? b : a
+  return joined(a, b)
 }
 
 /**
@@ -2746,13 +2802,14 @@ function card($: EngineInterface, e: PaneEvent, v: View, s: TamaSession, digit?:
       <Box flexDirection="column" alignItems="center" width={CARD_W} height={isTerminal ? CARD_H : undefined}
         borderStyle={isMe ? 'double' : 'round'} borderColor={isMe ? ME : s.live ? MOOD[s.mood].border ?? o.skin.outline : GREY}
         hover={{ scope: `repo:${s.repo}`.slice(0, 64), borderColor: HOVER }}>
-        <Box width={CARD_W - 2} justifyContent="space-between">
+        {/* one line, whatever it holds: the label gives way, cut, to the badges */}
+        <Box width={CARD_W - 2} height={1} overflow="hidden" justifyContent="space-between">
           {isMe ? <Text bold color={ME}>★ you</Text>
             : !s.live ? <Button key={`wing-${s.id}`} plain label={`${WING} resurrect`} onPress={() => void resurrect($, s)} />
             : canJump(s.live) ? <Button key={`home-${s.id}`} plain label={`${HOME} attach`} onPress={() => void jump($, s)} />
-            : s.live.isElsewhere ? <Text dimColor>↗ another machine</Text>
+            : s.live.isElsewhere ? <Text dimColor wrap="truncate">↗ elsewhere</Text>
             : <Text> </Text>}
-          <Box gap={1}>
+          <Box gap={1} flexShrink={0}>
             {/* a pet that takes room on disk says how much, orange past 1 GB and red past 5 */}
             {size >= CARD_DISK_KB
               ? <Text key={`disk-${s.id}`} color={size >= GiB ? diskColor(size, 1, 5) : undefined} dimColor={size < GiB}>{bytesShort(size)}</Text>
