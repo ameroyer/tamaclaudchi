@@ -933,6 +933,11 @@ export async function refresh($: EngineInterface, opts: { everyMs?: number } = {
 }
 /** This copy of the module has read the shelf once (a reload starts over). */
 let isWarm = false
+/** The home folder, read at the start, for showing folders as `~/…`. */
+let homeDir = ''
+
+/** A folder with the home folder as `~`. */
+export const tildify = (d: string, home: string) => (home && (d === home || d.startsWith(`${home}/`)) ? `~${d.slice(home.length)}` : d)
 const WAKING = 'waking your pets'
 
 // An error said once in the conversation; again only in the debug log, so a
@@ -1731,7 +1736,7 @@ const TAB_STOP = 'spawn-tab'
  */
 async function folderMatches($: EngineInterface, typed: string, pets: TamaSession[]): Promise<string[]> {
   const home = (await $.env.get('HOME')) ?? ''
-  const short = (d: string) => (home && (d === home || d.startsWith(`${home}/`)) ? `~${d.slice(home.length)}` : d)
+  const short = (d: string) => tildify(d, home)
   const text = typed.trim()
   const full = text.replace(/^~(?=\/|$)/, home)
   const q = text.toLowerCase()
@@ -1767,15 +1772,23 @@ export function completeFolder(typed: string, dirs: string[]): { text: string; l
 }
 
 /** The folder the new-pet form's field shows: as typed, or this session's own. */
-const formDir = (form: Hatch, pets: TamaSession[], mine: string | null) => form.dir ?? pets.find(s => s.id === mine)?.cwd ?? '~'
+const formDir = (form: Hatch, pets: TamaSession[], mine: string | null) => {
+  const here = pets.find(s => s.id === mine)?.cwd
+  return form.dir ?? (here ? tildify(here, homeDir) : '~')
+}
 
 /** Completes the folder field as Tab does, unless a keystroke came meanwhile. */
+/** How many Tabs have filled the folder field in: its key, so each draws a fresh field. */
+let tabsFilled = 0
 async function tabFolder($: EngineInterface, pets: TamaSession[]) {
   const mine = await read($, me)
   const typed = formDir(await read($, hatch), pets, mine)
   const { text, list } = completeFolder(typed, await folderMatches($, typed, pets))
   if (formDir(await read($, hatch), pets, mine) !== typed) return
-  if (text !== typed) await update($, hatch, f => ({ ...f, dir: text }))
+  if (text !== typed) {
+    tabsFilled++
+    await update($, hatch, f => ({ ...f, dir: text }))
+  }
   await update($, folderHints, () => ({ for: text, dirs: list }))
 }
 
@@ -2715,8 +2728,11 @@ function hatchForm($: EngineInterface, e: PaneEvent, v: View, form: Hatch, hints
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
       <Text bold color={ACCENT}>+ a new pet, {settings.hatchIn === 'tmux' ? 'in its own tmux session' : 'in the background (claude --bg)'}</Text>
-      <Input key="spawn-dir" label="folder" value={dir} autoFocus submitLabel="hatch"
-        onInput={typeDir} onSubmit={d => void spawnPet($, d)} />
+      {/* drawn anew after each Tab that fills it in, so the cursor lands at its end */}
+      <Box key={`spawn-dir-${tabsFilled}`}>
+        <Input key="spawn-dir" label="folder" value={dir} autoFocus submitLabel="hatch"
+          onInput={typeDir} onSubmit={d => void spawnPet($, d)} />
+      </Box>
       {/* Tab from the field lands here and comes back completed (the ui.focus hook); a click completes too */}
       <Button key={TAB_STOP} plain dimColor label="⇥ tab completes the folder" onPress={() => void tabFolder($, v.list)} />
       {/* the folders a Tab could not choose between: a press puts one in the field, Tab again looks inside */}
@@ -3259,7 +3275,7 @@ async function petPage($: EngineInterface, e: PaneEvent, v: View, s: TamaSession
           {/* started with claude --bg: no terminal of its own, attach opens one */}
           {s.live?.job ? <Text color="#3b3340" backgroundColor={PILL_BG}> ◐ background </Text> : null}
         </Box>
-        <Text dimColor wrap="truncate-start">{s.cwd}</Text>
+        <Text dimColor wrap="truncate-start">{tildify(s.cwd, homeDir)}</Text>
         <Text dimColor>{lifeLine}</Text>
         {/* the lights' figures: how far it has come to where Claude Code auto-compacts it */}
         {s.contextTokens ? <Text dimColor>context: {tokenCount(s.contextTokens)} of the {tokenCount(compactAtOf(s))} where Claude Code auto-compacts it</Text> : null}
@@ -3494,6 +3510,7 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'tama', description: 'Open the TamaClaudchi shelf: every session, across folders, as a pet' })
     await $.command.register({ name: 'tama-next', description: 'Go to the next pet that needs you (a permission prompt), the longest stuck first' })
     await update($, me, () => null)
+    homeDir = (await $.env.get('HOME')) ?? ''
     // The host keeps these across a reload of the mod, when an older version
     // may have written them in another shape: start again from the shelf.
     await update($, selected, () => null)

@@ -9,7 +9,7 @@ import { costOf } from './pricing'
 import { vivid } from './format'
 import { MODEL_SKIN, REPO_SKINS } from './sprites'
 import { dayOf, readCalls, spendOf, type Call } from './spend'
-import { arrangeShelf, attachClient, canTellApart, faceStatus, followed, readLive, forgetProcesses, groupPets, GROUPINGS, hatchArgs, completeFolder, isAliveElsewhere, isRunning, jobOf, LAPSED_MS, leaseTimes, machineFrom, machineKeyOf, newMail, news, parentOf, searchGraves } from './register'
+import { arrangeShelf, attachClient, canTellApart, faceStatus, followed, readLive, forgetProcesses, groupPets, GROUPINGS, hatchArgs, completeFolder, isAliveElsewhere, isRunning, jobOf, LAPSED_MS, leaseTimes, machineFrom, machineKeyOf, newMail, news, parentOf, searchGraves, tildify } from './register'
 import { hasRecentMail, isFrom, mailEdges, postsOf, readMail, threadsOf, type MailFact } from './mail'
 import { mailFrames } from './pets'
 import { settings } from './config'
@@ -1483,4 +1483,11 @@ test('the whole conversation: what each compaction dropped, each counted once ho
   readCompacts(lines, into)
   readCompacts(lines, into)
   expect([...into.values()]).toEqual([57_281, 62_819])
+})
+
+test('tildify shows a folder under home as ~/…, and leaves the rest', () => {
+  expect(tildify('/home/tama/src/acorn', '/home/tama')).toBe('~/src/acorn')
+  expect(tildify('/home/tama', '/home/tama')).toBe('~')
+  expect(tildify('/home/tamarind/src', '/home/tama')).toBe('/home/tamarind/src')
+  expect(tildify('/srv/acorn', '')).toBe('/srv/acorn')
 })
