@@ -9,7 +9,7 @@ import { costOf } from './pricing'
 import { vivid } from './format'
 import { MODEL_SKIN, REPO_SKINS } from './sprites'
 import { dayOf, readCalls, spendOf, type Call } from './spend'
-import { arrangeShelf, attachClient, canTellApart, faceStatus, followed, readLive, forgetProcesses, groupPets, GROUPINGS, hatchArgs, isAliveElsewhere, isRunning, jobOf, LAPSED_MS, leaseTimes, machineFrom, machineKeyOf, newMail, news, parentOf, searchGraves } from './register'
+import { arrangeShelf, attachClient, canTellApart, faceStatus, followed, readLive, forgetProcesses, groupPets, GROUPINGS, hatchArgs, completeFolder, isAliveElsewhere, isRunning, jobOf, LAPSED_MS, leaseTimes, machineFrom, machineKeyOf, newMail, news, parentOf, searchGraves } from './register'
 import { hasRecentMail, isFrom, mailEdges, postsOf, readMail, threadsOf, type MailFact } from './mail'
 import { mailFrames } from './pets'
 import { settings } from './config'
@@ -1216,6 +1216,18 @@ test('claude --bg is read for its job, and a new pet is started with its model, 
   expect(hatchArgs({ model: null, worktree: null, prompt: '  ' })).toEqual([])
   // a prompt goes after --, so one starting with a dash stays a prompt; the worktree is named, or -w would take the prompt for its name
   expect(hatchArgs({ model: 'sonnet', worktree: 'acorn-x1', prompt: ' -v: fix the flaky test ' })).toEqual(['--model', 'sonnet', '--worktree', 'acorn-x1', '--', '-v: fix the flaky test'])
+  // a name chosen is its title on the shelf
+  expect(hatchArgs({ name: ' Nibbles ', model: null, worktree: null, prompt: '' })).toEqual(['--name', 'Nibbles'])
+})
+
+test('Tab completes a folder as a shell does: whole when one fits, as far as they agree, else a list', () => {
+  expect(completeFolder('~/Doc', ['~/Documents'])).toEqual({ text: '~/Documents/', list: [] })
+  expect(completeFolder('~/src/a', ['~/src/acorn', '~/src/acorn-old'])).toEqual({ text: '~/src/acorn', list: [] })
+  // nothing more they agree on: listed, to pick from
+  expect(completeFolder('~/src/acorn-', ['~/src/acorn-old', '~/src/acorn-new'])).toEqual({ text: '~/src/acorn-', list: ['~/src/acorn-old', '~/src/acorn-new'] })
+  // a pet's folder found by a word inside it is listed, not completed into
+  expect(completeFolder('bram', ['~/src/bramble', '/x/bramble2'])).toEqual({ text: 'bram', list: ['~/src/bramble', '/x/bramble2'] })
+  expect(completeFolder('~/nowhere', [])).toEqual({ text: '~/nowhere', list: [] })
 })
 
 test('a pet hatches, comes back and is stopped in the background; tmux takes over where claude --bg cannot', async ($, on) => {
@@ -1274,6 +1286,14 @@ test('a pet hatches, comes back and is stopped in the background; tmux takes ove
     viewport: { columns: 140, rows: 40 },
   })
 
+  // no folders offered until Tab asks; Tab completes the one a pet knows
+  await ui.press({ key: 'spawn' })
+  expect(await ui.find({ key: 'hint-~/src/acorn' })).toBeUndefined()
+  await ui.input({ key: 'spawn-dir', text: '~/src/ac', kind: 'change' })
+  await ui.press({ key: 'spawn-tab' })
+  expect((await ui.find({ key: 'spawn-dir' }))?.props.value).toBe('~/src/acorn/')
+  await ui.press({ key: 'spawn-cancel' })
+
   // with a first prompt, a model and a worktree: claude --bg in the folder, and it gets to work where it is
   await ui.press({ key: 'spawn' })
   expect(JSON.stringify(await ui.drawn())).toContain('in the background (claude --bg)')
@@ -1303,11 +1323,13 @@ test('a pet hatches, comes back and is stopped in the background; tmux takes ove
   ran.length = 0
   await ui.press({ key: 'spawn' })
   await ui.press({ key: 'spawn-model-haiku' })
+  // its name chosen: its title, and its tmux session's as tmux allows it
+  await ui.input({ key: 'spawn-name', text: 'Mr. Nibbles', kind: 'change' })
   await ui.input({ key: 'spawn-dir', text: '/h/untrusted' })
-  expect(argvOf('tmux', 'new-session')[0]!.argv).toEqual(['tmux', 'new-session', '-d', '-P', '-F', '#{session_name}:#{window_id}.#{pane_id}', '-s', 'untrusted', '-c', '/h/untrusted'])
-  expect(argvOf('tmux', 'send-keys')[0]!.argv).toEqual(['tmux', 'send-keys', '-t', '%5', "claude '--model' 'haiku'", 'Enter'])
+  expect(argvOf('tmux', 'new-session')[0]!.argv).toEqual(['tmux', 'new-session', '-d', '-P', '-F', '#{session_name}:#{window_id}.#{pane_id}', '-s', 'Mr--Nibbles', '-c', '/h/untrusted'])
+  expect(argvOf('tmux', 'send-keys')[0]!.argv).toEqual(['tmux', 'send-keys', '-t', '%5', "claude '--name' 'Mr. Nibbles' '--model' 'haiku'", 'Enter'])
   expect(toasts.at(-1)).toContain('Workspace not trusted')
-  expect(toasts.at(-1)).toContain('a new pet is hatching in tmux session untrusted')
+  expect(toasts.at(-1)).toContain('a new pet is hatching in tmux session Mr--Nibbles')
 
   // a closed pet comes back in the background, in its folder, and is opened
   ran.length = 0

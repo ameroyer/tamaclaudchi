@@ -108,10 +108,11 @@ export type Spend = {
 export type Grouping = 'mood' | 'repo' | 'model' | 'name'
 
 /**
- * The new-pet form: its folder (null: this session's), a first prompt, a
- * model (null: the default), and whether it gets a git worktree of its own.
+ * The new-pet form: its folder (null: this session's), its name (empty: the
+ * repo's), a first prompt, a model (null: the default), and whether it gets a
+ * git worktree of its own.
  */
-export type Hatch = { dir: string | null; prompt: string; model: string | null; worktree: boolean }
+export type Hatch = { dir: string | null; name: string; prompt: string; model: string | null; worktree: boolean }
 
 /** One session on the shelf, as read from its transcript. */
 export type TamaSession = {
@@ -225,7 +226,7 @@ declare module 'claude-code' {
       broadcastTo: string
       /** The new-pet form as filled in so far. */
       hatch: Hatch
-      /** The folders the new-pet form offers, for what its folder field held (`for`). */
+      /** The folders the new-pet form offers after a Tab that could not complete, for what its folder field held (`for`). */
       folderHints: { for: string | null; dirs: string[] }
       /** The pet whose page shows the colours its repo can take, or null. */
       pickingColour: string | null

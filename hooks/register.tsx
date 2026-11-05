@@ -23,7 +23,7 @@ import { lettersOf, MAIL_AWK, mailEdges, mailRead, PROMPT_AWK, readMail, postsOf
 import { bytes, clip, vivid, ago, bytesShort, diskColor, GiB, lights, plural, tidy, tokenCount, usd, when, widest } from './format'
 
 /** The new-pet form, empty: this session's folder, no prompt, the default model, no worktree. */
-export const NO_HATCH: Hatch = { dir: null, prompt: '', model: null, worktree: false }
+export const NO_HATCH: Hatch = { dir: null, name: '', prompt: '', model: null, worktree: false }
 
 // The values the mod reads or writes, one plugin and key each.
 const convo = atom({ plugin: 'tamaclaudchi', key: 'convo' } as const, null as { id: string; mtimeMs: number; said: Said[] } | null)
@@ -1698,12 +1698,14 @@ async function resurrectNow($: EngineInterface, s: TamaSession) {
 export const HATCH_MODELS: (string | null)[] = [null, 'fable', 'opus', 'sonnet', 'haiku']
 
 /**
- * What `claude` is started with for a new pet: its model, a git worktree of
- * its own (named, as `-w` would otherwise take the prompt for its name), and
- * a first prompt, after `--` so one starting with a dash stays a prompt.
+ * What `claude` is started with for a new pet: its name (its title on the
+ * shelf), its model, a git worktree of its own (named, as `-w` would otherwise
+ * take the prompt for its name), and a first prompt, after `--` so one
+ * starting with a dash stays a prompt.
  */
-export function hatchArgs(h: { model: string | null; worktree: string | null; prompt: string }): string[] {
+export function hatchArgs(h: { name?: string; model: string | null; worktree: string | null; prompt: string }): string[] {
   return [
+    ...(h.name?.trim() ? ['--name', h.name.trim()] : []),
     ...(h.model ? ['--model', h.model] : []),
     ...(h.worktree ? ['--worktree', h.worktree] : []),
     ...(h.prompt.trim() ? ['--', h.prompt.trim()] : []),
@@ -1717,15 +1719,17 @@ export function hatchArgs(h: { model: string | null; worktree: string | null; pr
  * opened, so you can type to it. A folder not trusted yet only an interactive
  * claude can ask about, so it hatches in tmux instead.
  */
-/** How many folders the new-pet form offers at once. */
-const HINTS_SHOWN = 6
+/** How many folders the new-pet form lists after a Tab that could not complete. */
+const HINTS_SHOWN = 12
+/** The stop after the folder field that Tab lands on, to complete it. */
+const TAB_STOP = 'spawn-tab'
 
 /**
  * Folders for what the new-pet form's folder field holds: the running and
  * recent pets' own folders that hold the text, then those it names the start
  * of (`~/Doc` offers ~/Documents; `~/Documents/` the folders in it).
  */
-export async function suggestFolders($: EngineInterface, typed: string, pets: TamaSession[]) {
+async function folderMatches($: EngineInterface, typed: string, pets: TamaSession[]): Promise<string[]> {
   const home = (await $.env.get('HOME')) ?? ''
   const short = (d: string) => (home && (d === home || d.startsWith(`${home}/`)) ? `~${d.slice(home.length)}` : d)
   const text = typed.trim()
@@ -1743,9 +1747,36 @@ export async function suggestFolders($: EngineInterface, typed: string, pets: Ta
       .filter(d => { const base = d.slice(d.lastIndexOf('/') + 1).toLowerCase(); return base.startsWith(start) && (start.startsWith('.') || !base.startsWith('.')) })
       .sort((a, b) => a.localeCompare(b)).map(short)
   }
-  const dirs = [...new Set([...known, ...found])].filter(d => d !== text && `${d}/` !== text).slice(0, HINTS_SHOWN)
-  // a later keystroke may have asked again meanwhile: the latest wins
-  if ((await read($, hatch)).dir === typed || (typed === '' && (await read($, hatch)).dir === null)) await update($, folderHints, () => ({ for: typed, dirs }))
+  return [...new Set([...known, ...found])].filter(d => d !== text && `${d}/` !== text)
+}
+
+/**
+ * Tab in the folder field, as a shell completes: one folder that fits is
+ * filled in whole; several that start alike, as far as they agree; and when
+ * that adds nothing, they are listed below the field to pick from.
+ */
+export function completeFolder(typed: string, dirs: string[]): { text: string; list: string[] } {
+  if (dirs.length === 1) return { text: `${dirs[0]}/`, list: [] }
+  const starting = dirs.filter(d => d.startsWith(typed))
+  if (starting.length > 1) {
+    let common = starting[0]!
+    for (const d of starting) while (!d.startsWith(common)) common = common.slice(0, -1)
+    if (common.length > typed.length) return { text: common, list: [] }
+  }
+  return { text: typed, list: dirs.slice(0, HINTS_SHOWN) }
+}
+
+/** The folder the new-pet form's field shows: as typed, or this session's own. */
+const formDir = (form: Hatch, pets: TamaSession[], mine: string | null) => form.dir ?? pets.find(s => s.id === mine)?.cwd ?? '~'
+
+/** Completes the folder field as Tab does, unless a keystroke came meanwhile. */
+async function tabFolder($: EngineInterface, pets: TamaSession[]) {
+  const mine = await read($, me)
+  const typed = formDir(await read($, hatch), pets, mine)
+  const { text, list } = completeFolder(typed, await folderMatches($, typed, pets))
+  if (formDir(await read($, hatch), pets, mine) !== typed) return
+  if (text !== typed) await update($, hatch, f => ({ ...f, dir: text }))
+  await update($, folderHints, () => ({ for: text, dirs: list }))
 }
 
 export const spawnPet = ($: EngineInterface, input: string, typed: Partial<Hatch> = {}) => busy($, 'hatching a new pet', () => spawnPetNow($, input, typed))
@@ -1758,7 +1789,8 @@ async function spawnPetNow($: EngineInterface, input: string, typed: Partial<Hat
     $.ui.toast(`No folder at ${dir}.`)
     return
   }
-  const base = (dir.split('/').filter(Boolean).pop() ?? '').replace(/[^\w-]/g, '-') || 'pet'
+  // its tmux session and worktree are named after it, as tmux allows (no dots, no colons)
+  const base = (form.name.trim() || dir.split('/').filter(Boolean).pop() || '').replace(/[^\w-]/g, '-') || 'pet'
   const args = hatchArgs({ ...form, worktree: form.worktree ? `${base.slice(0, 24)}-${Date.now().toString(36).slice(-5)}` : null })
   let why = ''
   if (settings.hatchIn === 'background') {
@@ -2557,13 +2589,13 @@ async function shelfPage($: EngineInterface, e: PaneEvent, v: View) {
       </Box>
       {isGraveOpen
         ? <Button key="graveyard" hotkey="g" plain label="← back to the shelf" onPress={openGraves(false)} />
-        : spawning && Input ? hatchForm($, e, v, self, await read($, hatch), await read($, folderHints))
+        : spawning && Input ? hatchForm($, e, v, await read($, hatch), await read($, folderHints))
         : isTelling && Input ? broadcastBox($, e, v, self, await read($, broadcastTo), digit)
         : (
           <Box flexDirection="column">
             <Box columnGap={2} flexWrap="wrap">
               <Box columnGap={1}>
-                <Button key="spawn" hotkey="n" plain label="+ new pet" onPress={() => { void update($, isSpawning, () => true); void suggestFolders($, '', v.list) }} />
+                <Button key="spawn" hotkey="n" plain label="+ new pet" onPress={() => void update($, isSpawning, () => true)} />
                 <Text dimColor>· {alive.length} running across {plural(folders, 'folder')}</Text>
               </Box>
               {closed.length ? <Button key="graveyard" hotkey="g" plain label={`${GRAVE} graveyard · ${closed.length} closed`} onPress={openGraves(true)} /> : null}
@@ -2672,28 +2704,34 @@ function choices($: EngineInterface, e: PaneEvent, key: string, options: { value
  * a worktree of its own. Enter in either field hatches it; where it runs is a
  * setting (in the background unless it says tmux).
  */
-function hatchForm($: EngineInterface, e: PaneEvent, v: View, self: TamaSession | undefined, form: Hatch, hints: { for: string | null; dirs: string[] }) {
+function hatchForm($: EngineInterface, e: PaneEvent, v: View, form: Hatch, hints: { for: string | null; dirs: string[] }) {
   const { Box, Text, Button } = $.ui.resolve(e)
   const Input = e.surface !== 'mobile' ? $.ui.resolve(e).Input : null
   if (!Input) return null
-  const dir = form.dir ?? self?.cwd ?? '~'
+  const dir = formDir(form, v.list, v.mine)
   const set = (change: Partial<Hatch>) => void update($, hatch, f => ({ ...f, ...change }))
+  // typing hides the folders a Tab listed; Tab again lists them anew
+  const typeDir = (d: string) => { set({ dir: d }); if (hints.dirs.length) void update($, folderHints, () => ({ for: null, dirs: [] })) }
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
       <Text bold color={ACCENT}>+ a new pet, {settings.hatchIn === 'tmux' ? 'in its own tmux session' : 'in the background (claude --bg)'}</Text>
       <Input key="spawn-dir" label="folder" value={dir} autoFocus submitLabel="hatch"
-        onInput={d => { set({ dir: d }); void suggestFolders($, d, v.list) }} onSubmit={d => void spawnPet($, d)} />
-      {/* folders for what it holds: a press puts one in the field, to hatch there or look inside */}
+        onInput={typeDir} onSubmit={d => void spawnPet($, d)} />
+      {/* Tab from the field lands here and comes back completed (the ui.focus hook); a click completes too */}
+      <Button key={TAB_STOP} plain dimColor label="⇥ tab completes the folder" onPress={() => void tabFolder($, v.list)} />
+      {/* the folders a Tab could not choose between: a press puts one in the field, Tab again looks inside */}
       {hints.dirs.length ? (
         <Box flexWrap="wrap" columnGap={2}>
-          <Text dimColor>try</Text>
           {hints.dirs.map(d => (
-            <Button key={`hint-${d}`.slice(0, 64)} plain onPress={() => { set({ dir: `${d}/` }); void suggestFolders($, `${d}/`, v.list) }}>
+            <Button key={`hint-${d}`.slice(0, 64)} plain onPress={() => { set({ dir: `${d}/` }); void update($, folderHints, () => ({ for: null, dirs: [] })) }}>
               <Text color={ACCENT}>{clip(d, TAB_W)}</Text>
             </Button>
           ))}
         </Box>
       ) : null}
+      <Input key="spawn-name" label="name" value={form.name} submitLabel="hatch"
+        placeholder={settings.hatchIn === 'tmux' ? "optional: its name and its tmux session's (else the folder's)" : "optional: its name (else the repo's)"}
+        onInput={name => set({ name })} onSubmit={name => void spawnPet($, dir, { name })} />
       <Input key="spawn-prompt" label="first prompt" value={form.prompt} placeholder="optional: what it should start on" submitLabel="hatch"
         onInput={prompt => set({ prompt })} onSubmit={prompt => void spawnPet($, dir, { prompt })} />
       <Box gap={1}>
@@ -2928,7 +2966,7 @@ function helpPage($: EngineInterface, e: PaneEvent, v: View) {
         row('h', 'this page, and back'),
       ])}
       {section('Shortcuts: your pets', [
-        row('n', 'hatch a new pet: a folder, a first prompt, a model, a worktree if you like'),
+        row('n', 'hatch a new pet: a folder (Tab completes it), a name, a first prompt, a model, a worktree'),
         row('g', 'the graveyard: closed pets, searchable'),
         row('x ×2', 'in the graveyard: clean every closed pet\'s temp files'),
         row('s', 'credit usage: what your pets would cost at API prices'),
@@ -3587,6 +3625,12 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => renderPane($, e))
+  // Tab out of the new-pet form's folder field: completed, and the ring back in the field
+  on('ui.focus', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    if (e.element !== TAB_STOP || e.origin.kind !== 'person' || !(await read($, isSpawning))) return next(e)
+    await tabFolder($, await read($, sessions))
+    return next({ ...e, element: 'spawn-dir' })
+  })
 
   // the footer, right of the prompt: every running pet as a little face
   on('ui.render', { component: 'SessionMode' }, ($, e, next) => renderFooter($, e, next))

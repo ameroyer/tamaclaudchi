@@ -145,11 +145,14 @@ When a pet needs you (a permission prompt), your other sessions show a toast
 and you get one desktop notification. When a pet's context fills past
 `contextAlertPercent`, they show a toast once.
 
-A new pet (`n`) takes a folder, and optionally a first prompt, a model and a
-git worktree of its own. Under the folder, it offers your pets' folders that
-hold what you typed, then the folders that start with it (`~/Doc` offers
-`~/Documents`); pressing one puts it in the field, and offers what is inside. Given a prompt, it gets to work in the background;
-without one, it opens for you to talk to.
+A new pet (`n`) takes a folder, and optionally a name, a first prompt, a
+model and a git worktree of its own. Tab in the folder field completes it as a
+shell does (`~/Doc` becomes `~/Documents/`, your pets' folders included); where
+several folders fit and Tab can go no further, they are listed under the field
+to pick from. The name is the pet's title on the shelf (`claude --name`), and
+its tmux session's when it hatches in tmux; without one, it takes its folder's.
+Given a prompt, it gets to work in the background; without one, it opens for
+you to talk to.
 
 A pet's page shows its subagents however long ago they ran: the running ones
 first (all of them, however many), then the newest, `subagentsShown` (6) in all,
@@ -245,7 +248,7 @@ process call, never through a shell with your input in the command:
 
 | program | when | why |
 |---|---|---|
-| `find -L <folder> -mindepth 1 -maxdepth 1 -type d` | typing in the new-pet form's folder field | offer the folders in the one you are typing in |
+| `find -L <folder> -mindepth 1 -maxdepth 1 -type d` | Tab in the new-pet form's folder field | complete the folder, or list those that fit |
 | `sh -c <script>` with `find`, `stat`, `grep`, `awk`, `sed`, `tail`, `head`, `tr`, `du`, `xargs`, `id`, `date` | every poll | read the transcripts that changed and the disk use; each script is a fixed string in `hooks/register.tsx` (its shelf section), the paths passed as arguments |
 | `env TZ=UTC0 LC_ALL=C ps`, `kill -0` | every poll | whether a session's process is still alive (macOS; Linux reads `/proc`) |
 | `git` (read-only: `rev-parse`, `status`, `log`) | a pet's page | its git activity, with fsmonitor and signature programs turned off |
