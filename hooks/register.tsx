@@ -933,11 +933,6 @@ export async function refresh($: EngineInterface, opts: { everyMs?: number } = {
 }
 /** This copy of the module has read the shelf once (a reload starts over). */
 let isWarm = false
-/** The home folder, read at the start, for showing folders as `~/…`. */
-let homeDir = ''
-
-/** A folder with the home folder as `~`. */
-export const tildify = (d: string, home: string) => (home && (d === home || d.startsWith(`${home}/`)) ? `~${d.slice(home.length)}` : d)
 const WAKING = 'waking your pets'
 
 // An error said once in the conversation; again only in the debug log, so a
@@ -1736,13 +1731,12 @@ const TAB_STOP = 'spawn-tab'
  */
 async function folderMatches($: EngineInterface, typed: string, pets: TamaSession[]): Promise<string[]> {
   const home = (await $.env.get('HOME')) ?? ''
-  const short = (d: string) => tildify(d, home)
   const text = typed.trim()
   const full = text.replace(/^~(?=\/|$)/, home)
   const q = text.toLowerCase()
   // the pets' folders, the one talked to last first
   const known = [...new Set([...pets].sort((a, b) => talkedAt(b) - talkedAt(a)).map(s => s.cwd).filter(Boolean))]
-    .map(short).filter(d => !q || d.toLowerCase().includes(q) || d.toLowerCase().includes(full.toLowerCase()))
+    .map(d => tildify(d, home)).filter(d => !q || d.toLowerCase().includes(q) || d.toLowerCase().includes(full.toLowerCase()))
   let found: string[] = []
   if (full.startsWith('/')) {
     const cut = full.lastIndexOf('/')
@@ -1750,7 +1744,7 @@ async function folderMatches($: EngineInterface, typed: string, pets: TamaSessio
     const res = await $.process.run(['find', '-L', parent, '-mindepth', '1', '-maxdepth', '1', '-type', 'd'], { timeoutMs: 5000 }).catch(() => null)
     found = (res?.stdout ?? '').split('\n').filter(Boolean)
       .filter(d => { const base = d.slice(d.lastIndexOf('/') + 1).toLowerCase(); return base.startsWith(start) && (start.startsWith('.') || !base.startsWith('.')) })
-      .sort((a, b) => a.localeCompare(b)).map(short)
+      .sort((a, b) => a.localeCompare(b)).map(d => tildify(d, home))
   }
   return [...new Set([...known, ...found])].filter(d => d !== text && `${d}/` !== text)
 }
@@ -1771,15 +1765,22 @@ export function completeFolder(typed: string, dirs: string[]): { text: string; l
   return { text: typed, list: dirs.slice(0, HINTS_SHOWN) }
 }
 
+/** The home folder, read at the start, for showing folders as `~/…`. */
+let homeDir = ''
+
+/** A folder with the home folder as `~`. */
+export const tildify = (d: string, home: string) => (home && (d === home || d.startsWith(`${home}/`)) ? `~${d.slice(home.length)}` : d)
+
 /** The folder the new-pet form's field shows: as typed, or this session's own. */
 const formDir = (form: Hatch, pets: TamaSession[], mine: string | null) => {
   const here = pets.find(s => s.id === mine)?.cwd
   return form.dir ?? (here ? tildify(here, homeDir) : '~')
 }
 
-/** Completes the folder field as Tab does, unless a keystroke came meanwhile. */
 /** How many Tabs have filled the folder field in: its key, so each draws a fresh field. */
 let tabsFilled = 0
+
+/** Completes the folder field as Tab does, unless a keystroke came meanwhile. */
 async function tabFolder($: EngineInterface, pets: TamaSession[]) {
   const mine = await read($, me)
   const typed = formDir(await read($, hatch), pets, mine)

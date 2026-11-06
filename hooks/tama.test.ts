@@ -1172,24 +1172,24 @@ test('a background session is seen in the tmux client showing an attach to it, t
   const ps = [
     '  883056       1 claude --bg',
     '  634826  177448 -bash',
-    '  662624  634826 /home/x/.local/bin/claude attach e0ff4760',
+    '  662624  634826 /home/x/.local/bin/claude attach beefcafe',
     ' 2740182  177448 -bash',
-    '  298566 2740182 claude attach e0ff4760',
-    '  700000  634826 claude attach 12c5133a',
-    '  700001  634826 vim attach e0ff4760',
+    '  298566 2740182 claude attach beefcafe',
+    '  700000  634826 claude attach f00dcafe',
+    '  700001  634826 vim attach beefcafe',
   ].join('\n')
   const panes = '634826 $209\n2740182 $12\n'
   // $12 shows the other attach too, but was used longer ago
   const clients = '1793031482 $209 /dev/pts/21\n1793000000 $12 /dev/pts/4\n1793039999 $3 /dev/pts/9\n'
-  expect(attachClient('e0ff4760', ps, panes, clients)).toBe('/dev/pts/21')
-  expect(attachClient('e0ff4760', ps, panes, '1793039999 $3 /dev/pts/9\n')).toBeNull() // no client shows it
+  expect(attachClient('beefcafe', ps, panes, clients)).toBe('/dev/pts/21')
+  expect(attachClient('beefcafe', ps, panes, '1793039999 $3 /dev/pts/9\n')).toBeNull() // no client shows it
   expect(attachClient('deadbeef', ps, panes, clients)).toBeNull()
 })
 
 test('a background session keeps its job while attached, and takes the attach\'s pane', async () => {
-  // as Claude Code writes them: `claude attach e0ff4760` registers too, with the same session id
-  const bg = { pid: 1098008, sessionId: 'e0ff4760-8791', kind: 'bg', jobId: 'e0ff4760', status: 'shell', name: 'night-shift', messagingSocketPath: '/run/s.sock' }
-  const attach = { pid: 1168001, sessionId: 'e0ff4760-8791', kind: 'interactive', tmux: 'zoo:@216.%242', name: 'zoo-43' }
+  // as Claude Code writes them: `claude attach beefcafe` registers too, with the same session id
+  const bg = { pid: 1098008, sessionId: 'beefcafe-8791', kind: 'bg', jobId: 'beefcafe', status: 'shell', name: 'night-shift', messagingSocketPath: '/run/s.sock' }
+  const attach = { pid: 1168001, sessionId: 'beefcafe-8791', kind: 'interactive', tmux: 'zoo:@216.%242', name: 'zoo-43' }
   const layouts: Record<string, object>[] = [{ 'a.json': attach, 'b.json': bg }, { 'c.json': bg, 'd.json': attach }]
   for (const files of layouts) {
     const $ = {
@@ -1201,9 +1201,9 @@ test('a background session keeps its job while attached, and takes the attach\'s
       },
       process: { run: async () => ({ exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }) },
     } as unknown as EngineInterface
-    const live = (await readLive($)).get('e0ff4760-8791')!
+    const live = (await readLive($)).get('beefcafe-8791')!
     expect(live.pid).toBe(1098008)
-    expect(live.job).toBe('e0ff4760')
+    expect(live.job).toBe('beefcafe')
     expect(live.tmux).toBe('zoo:@216.%242')
     expect(live.socket).toBe('/run/s.sock')
   }
